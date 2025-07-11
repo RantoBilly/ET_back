@@ -157,6 +157,7 @@ class Collaborator(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
 
+    # For validating migrations for User
     USERNAME_FIELD = 'email_address'
     REQUIRED_FIELDS = ['first_name', 'last_name']
 
