@@ -348,6 +348,10 @@ class Collaborator(AbstractBaseUser, PermissionsMixin):
                     raise ValidationError({
                         'cluster': f'le cluster {self.cluster.name} est déja attribué à {existing_pole_director.first_name} {existing_pole_director.last_name}'
                     })
+                if self.manager:
+                    raise ValidationError({
+                        'manager': "Un directeur de pole ne doit plus avoir de supérieure"
+                    })
 
             elif self.role == 'entity_director':
                 if self.entity is None:

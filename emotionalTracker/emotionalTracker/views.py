@@ -12,7 +12,7 @@ from django.utils import timezone
 from django.db.models import Q
 
 from .models import Emotion, EmotionType, Collaborator
-from .serializers import EmotionSerializer, CollaboratorCreateSerializer, CollaboratorDetailSerializer
+from .serializers import EmotionSerializer, CollaboratorCreateSerializer, CollaboratorDetailSerializer, EmotionTypeSerializer
 
 
 class AuthViewSet(viewsets.ViewSet):
@@ -154,7 +154,7 @@ class EmotionViewSet(viewsets.ModelViewSet):
         Get all available emotion types
         """
         emotion_types = EmotionType.objects.all()
-        serializer = EmotionSerializer(emotion_types, many=True)
+        serializer = EmotionTypeSerializer(emotion_types, many=True)
         return Response(serializer.data)
 
     @action(detail=False, methods=['POST'], url_path='submit')
@@ -201,22 +201,6 @@ class EmotionViewSet(viewsets.ModelViewSet):
 
             half_day = 'morning'
         else:
-            """"
-        # Evening and post-12 PM logic
-        
-            # CRITICAL CHANGE: Prevent ANY morning submissions after 12 PM
-            morning_emotion = Emotion.objects.filter(
-                collaborator=collaborator,
-                date__date=today,
-                half_day='morning'
-            ).first()
-
-            # If no morning emotion and it's past 12 PM, morning submissions are NOT ALLOWED
-            if not morning_emotion:
-                return Response({
-                    'error': "Morning emotion submission is no longer allowed after 12 PM"
-                }, status=status.HTTP_400_BAD_REQUEST)
-        """
 
             # Check if evening emotion already submitted
             evening_emotion = Emotion.objects.filter(

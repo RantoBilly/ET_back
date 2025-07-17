@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from .models import (
     Cluster, Entity, Department, Service,
     Collaborator, EmotionType, Emotion
@@ -87,9 +88,17 @@ class CollaboratorCreateSerializer(serializers.ModelSerializer):
         }
 
     def validate(self, attrs):
-        # Password confirmation validation
-        if attrs['password'] != attrs.pop('confirm_password'):
-            raise serializers.ValidationError({"password": "Password fields didn't match."})
+        # Vérifie seulement si l'utilisateur veut changer le mot de passe
+        password = attrs.get('password')
+        confirm_password = attrs.pop('confirm_password', None)
+
+        if password and confirm_password:
+            if password != confirm_password:
+                raise serializers.ValidationError({"password": "Password fields didn't match."})
+        elif password or confirm_password:
+            # Un seul champ est fourni (incomplet)
+            raise serializers.ValidationError({"password": "Both password and confirm_password are required to change password."})
+
 
         # Role-based hierarchy validation
         role = attrs.get('role')
@@ -150,7 +159,26 @@ class CollaboratorCreateSerializer(serializers.ModelSerializer):
             password=validated_data.pop('password'),
             **validated_data
         )
+
+        try:
+            user.full_clean()  # appèlle la méthode clean dans models.py
+        except ValidationError as e:
+            raise serializers.ValidationError(e.message_dict)
+
+        user.save()
         return user
+
+    def update(self, instance, validated_data):
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        try:
+            instance.full_clean()  # appelle explicite à clean()
+        except ValidationError as e:
+            raise serializers.ValidationError(e.message_dict)
+
+        instance.save()
+        return instance
 
 
 class CollaboratorDetailSerializer(serializers.ModelSerializer):
