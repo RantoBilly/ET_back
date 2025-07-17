@@ -60,7 +60,7 @@ class CollaboratorAdmin(UserAdmin):
     model = Collaborator
     list_display = ('email_address', 'first_name', 'last_name', 'role', 'manager',
                     'service', 'department', 'entity', 'cluster',
-                    'is_active', 'is_staff'
+                    'is_active', 'is_staff',
                     )
 
     def get_service_name(self, obj):

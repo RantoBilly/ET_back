@@ -200,9 +200,10 @@ class EmotionViewSet(viewsets.ModelViewSet):
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             half_day = 'morning'
-
-        # Evening and post-12 PM logic
         else:
+            """"
+        # Evening and post-12 PM logic
+        
             # CRITICAL CHANGE: Prevent ANY morning submissions after 12 PM
             morning_emotion = Emotion.objects.filter(
                 collaborator=collaborator,
@@ -215,6 +216,7 @@ class EmotionViewSet(viewsets.ModelViewSet):
                 return Response({
                     'error': "Morning emotion submission is no longer allowed after 12 PM"
                 }, status=status.HTTP_400_BAD_REQUEST)
+        """
 
             # Check if evening emotion already submitted
             evening_emotion = Emotion.objects.filter(
@@ -238,7 +240,8 @@ class EmotionViewSet(viewsets.ModelViewSet):
         # Prepare emotion data
         emotion_data = {
             'emotion_type': emotion_type.id,
-            'half_day': half_day
+            'half_day': half_day,
+            'collaborator': collaborator.id # avoid collaborator field submit error bc it requires this field
         }
 
         # Create and save emotion
