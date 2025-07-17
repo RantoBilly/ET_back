@@ -1,15 +1,142 @@
 from rest_framework import viewsets, status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.core.exceptions import ValidationError
+from rest_framework_simplejwt.views import TokenObtainPairView
 from datetime import timedelta
 
+from django.contrib.auth import logout
 from django.utils import timezone
 from django.db.models import Q
 
 from .models import Emotion, EmotionType, Collaborator
-from .serializers import EmotionSerializer
+from .serializers import EmotionSerializer, CollaboratorCreateSerializer, CollaboratorDetailSerializer
 
+
+class AuthViewSet(viewsets.ViewSet):
+    """
+    Authentication ViewSet for user registration, login, and logout
+    """
+
+    permission_classes = [AllowAny]
+
+    @action(detail=False, methods=['POST'], url_path='register')
+    def register(self, request):
+        """
+         Register a new collaborator
+        """
+
+        serializer = CollaboratorCreateSerializer(data=request.data)
+
+        try:
+            serializer.is_valid(raise_exception=True)
+            user = serializer.save()
+
+            # Generate tokens
+            refresh = RefreshToken.for_user(user)
+
+            return Response({
+                'user': CollaboratorDetailSerializer(user).data,
+                'refresh': str(refresh),
+                'access': str(refresh.access_token)
+            }, status=status.HTTP_201_CREATED)
+        except ValidationError as e:
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['POST'], url_path='login')
+    def login(self, request):
+        """
+         Login a collaborator and return JWT tokens
+        """
+        email = request.data.get('email_address')
+        password = request.data.get('password')
+
+        if not email or not password:
+            return Response({
+                'error': 'Invalid credentials'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            user = Collaborator.objects.get(email_address=email)
+
+            # Check password
+            if not user.check_password(password):
+                return Response({
+                    'error': 'Invalid credentials'
+                }, status=status.HTTP_401_UNAUTHORIZED)
+
+            # Generate tokens
+            refresh = RefreshToken.for_user(user)
+
+            return Response({
+                'user': CollaboratorDetailSerializer(user).data,
+                'refresh': str(refresh),
+                'access': str(refresh.access_token)
+            }, status=status.HTTP_200_OK)
+        except Collaborator.DoesNotExist:
+            return Response({
+                'error': 'User not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=False, methods=['POST'], url_path='logout')
+    def logout(self, request):
+        """
+         Logout a collaborator by blacklisting the token
+        """
+
+        try:
+            # Get the refresh token from the request
+            refresh_token = request.data.get('refresh_token')
+
+            if not refresh_token:
+                return Response({
+                    'error': 'Refresh token is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Blacklist the refresh token
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+
+            # Django logout (optional, depending on your session management)
+            logout(request)
+
+            return Response({
+                'message': 'Successfully logged out'
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({
+                'error': 'Invalid token'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['GET'], url_path='profile', permission_classes=[IsAuthenticated])
+    def get_profile(self, request):
+        """
+         Get the current authenticated user's profile
+        """
+        user = request.user
+        serializer = CollaboratorDetailSerializer(user)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['PUT', 'PATCH'], url_path='update-profile', permission_classes=[IsAuthenticated])
+    def update_profile(self, request):
+        """
+         Update the current authenticated user's profile
+        """
+        user = request.user
+        serializer = CollaboratorCreateSerializer(
+            user,
+            data=request.data,
+            partial=True # Allow partial updates
+        )
+        if serializer.is_valid():
+            serializer.save()
+            return Response(CollaboratorDetailSerializer(user).data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class EmotionViewSet(viewsets.ModelViewSet):
     queryset = Emotion.objects.all()

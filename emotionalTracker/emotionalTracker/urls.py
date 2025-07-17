@@ -16,15 +16,17 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-from .views import EmotionViewSet, EmotionOverviewSet
+from .views import EmotionViewSet, EmotionOverviewSet, AuthViewSet
 from rest_framework.routers import DefaultRouter
 
 
 router = DefaultRouter()
 router.register(r'emotions', EmotionViewSet, basename='emotion')
 router.register(r'emotion-overview', EmotionOverviewSet, basename='emotion-overview')
+router.register(r'auth', AuthViewSet, basename='auth')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('', include(router.urls)),
     path('', include(router.urls)),
 ]
