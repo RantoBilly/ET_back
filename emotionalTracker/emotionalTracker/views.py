@@ -173,6 +173,11 @@ class EmotionViewSet(viewsets.ModelViewSet):
         collaborator = request.user
         today = now.date()
 
+        if now.weekday() == 5 or now.weekday() == 6:
+            return Response({
+                'error': "C'est le week-end, vous ne pouvez déclarer vos émotions que durant la semaine de travail:"
+            })
+
         # Validate emotion type
         emotion_type_id = request.data.get('emotion_type')
         try:
