@@ -292,6 +292,45 @@ class EmotionOverviewSet(viewsets.ViewSet):
          Get emotion overview for the authenticated collaborator
         """
         collaborator = request.user
+        today = timezone.localdate()
+        week_number = today.isocalendar()[1]
+        month = today.month
+        year = today.year
+
+        # Total number of submissions
+        total_day = collaborator.emotions.filter(date__date=today).count()
+        total_week = collaborator.emotions.filter(week_number=week_number, year=year).count()
+        total_month = collaborator.emotions.filter(month=month, year=year).count()
+
+        # General humor: positive if degree > 0, negative if < 0, neutral if = 0
+        def general_humor(degree):
+            if degree > 0:
+                return "positive"
+            elif degree < 0:
+                return "negative"
+            else:
+                return "neutral"
+
+        # Daily, weekly, monthly degrees
+        degree_day = sum([e.emotion_degree for e in collaborator.emotions.filter(date__date=today)])
+        degree_week = collaborator.emotion_degree_this_week
+        degree_month = collaborator.emotion_degree_this_month
+
+        # Participation percentage
+        # Day: 2 max (morning + evening)
+        percent_day = min(1.0, total_day / 2.0) * 100
+        # Week: number of working days (Mon-Fri) in current week
+        from calendar import weekday, monthrange
+        week_days = [today + timedelta(days=i-today.weekday()) for i in range(5)]
+        week_working_days = sum(1 for d in week_days if d.month == today.month)
+        week_possible = week_working_days * 2
+        percent_week = min(1.0, total_week / week_possible) * 100 if week_possible > 0 else 0
+
+        # Month: number of working days (Mon-Fri) in current month
+        _, last_day = monthrange(year, month)
+        month_working_days = sum(1 for i in range(1, last_day+1) if weekday(year, month, i) < 5)
+        month_possible = month_working_days * 2
+        percent_month = min(1.0, total_month / month_possible) * 100 if month_possible > 0 else 0
 
         return Response({
             'today_morning': EmotionSerializer(collaborator.emotion_today_morning).data if collaborator.emotion_today_morning else None,
@@ -300,5 +339,16 @@ class EmotionOverviewSet(viewsets.ViewSet):
             'week_degree': collaborator.emotion_degree_this_week,
             'week_emotion': collaborator.emotion_this_week,
             'month_degree': collaborator.emotion_degree_this_month,
-            'month_emotion': collaborator.emotion_this_month
+            'month_emotion': collaborator.emotion_this_month,
+
+            # New fields
+            'total_submissions_day': total_day,
+            'total_submissions_week': total_week,
+            'total_submissions_month': total_month,
+            'general_humor_day': general_humor(degree_day),
+            'general_humor_week': general_humor(degree_week),
+            'general_humor_month': general_humor(degree_month),
+            'participation_percentage_day': round(percent_day, 2),
+            'participation_percentage_week': round(percent_week, 2),
+            'participation_percentage_month': round(percent_month, 2)
         })
