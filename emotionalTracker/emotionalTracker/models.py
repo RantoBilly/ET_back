@@ -305,9 +305,9 @@ class Collaborator(AbstractBaseUser, PermissionsMixin):
     service = models.ForeignKey('Service', on_delete=models.SET_NULL, related_name="collaborators", null=True, blank=True)
 
     #test for hierarchy
-    cluster = models.ForeignKey(Cluster, null=True, blank=True, on_delete=models.SET_NULL)
-    entity = models.ForeignKey(Entity, null=True, blank=True, on_delete=models.SET_NULL)
-    department = models.ForeignKey(Department, null=True, blank=True, on_delete=models.SET_NULL)
+    cluster = models.ForeignKey(Cluster, null=True, blank=True, on_delete=models.SET_NULL, related_name='collaborators')
+    entity = models.ForeignKey(Entity, null=True, blank=True, on_delete=models.SET_NULL, related_name='collaborators')
+    department = models.ForeignKey(Department, null=True, blank=True, on_delete=models.SET_NULL, related_name='collaborators')
 
 
     manager = models.ForeignKey(
