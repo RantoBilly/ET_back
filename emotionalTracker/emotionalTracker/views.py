@@ -557,21 +557,21 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
                 service_to_supervise.append(service.name)
 
                 # Service metrics
-                services_data.append({
-                    'service_name': service.name,
-                    'manager_name': f"{manager.first_name} {manager.last_name}" if manager else None,
-                    'employees_names': [f"{emp.first_name} {emp.last_name}" for emp in employees],
-                    'total_collaborators': collaborators.count(),
-                    'total_submissions_day': submissions_day,
-                    'total_submissions_week': submissions_week,
-                    'total_submissions_month': submissions_month,
-                    'participation_percentage_day': round(percent_day, 2),
-                    'participation_percentage_week': round(percent_week, 2),
-                    'participation_percentage_month': round(percent_month, 2),
-                    'general_humor_day': humor_day,
-                    'general_humor_week': humor_week,
-                    'general_humor_month': humor_month,
-                })
+            services_data.append({
+                'service_name': service.name,
+                'manager_name': f"{manager.first_name} {manager.last_name}" if manager else None,
+                'employees_names': [f"{emp.first_name} {emp.last_name}" for emp in employees],
+                'total_collaborators': collaborators.count(),
+                'total_submissions_day': submissions_day,
+                'total_submissions_week': submissions_week,
+                'total_submissions_month': submissions_month,
+                'participation_percentage_day': round(percent_day, 2),
+                'participation_percentage_week': round(percent_week, 2),
+                'participation_percentage_month': round(percent_month, 2),
+                'general_humor_day': humor_day,
+                'general_humor_week': humor_week,
+                'general_humor_month': humor_month,
+            })
 
         # For total general humor: sum up humor scores, or aggregate as needed (here, simply count negatives/positives)
         # For simplicity, below shows the average participation and majority general humor
