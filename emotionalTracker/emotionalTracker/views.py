@@ -620,6 +620,7 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
             return Response({'error': 'No entity assigned'}, status=status.HTTP_400_BAD_REQUEST)
 
         departments = entity.departments.all()
+        num_departments = departments.count()
         department_names = [dept.name for dept in departments]
         num_departments = departments.count()
 
@@ -767,6 +768,7 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
         return Response({
             'entity_name': entity.name,
             'department_names': department_names,
+            'num_departments': num_departments,
             'departments': departments_data,
             'total_collaborators': total_collaborators,
             'total_submissions_day': total_submissions_day,
@@ -782,4 +784,245 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
             'general_humor_week': aggregate_general_humor(departments_data, 'week'),
             'general_humor_month': aggregate_general_humor(departments_data, 'month'),
             'department_to_supervise': department_to_supervise,
+        })
+
+
+class PoleDirectorOverviewSet(viewsets.ViewSet):
+    """
+    Provides an overview for a pole director about their cluster and its entities
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['GET'], url_path='pole-director-overview')
+    def pole_director_overview(self, request):
+        director = request.user
+
+        # Ensure the user is a pole director
+        if director.role != 'pole_director':
+            return Response({'error': 'You are not a pole director'}, status=status.HTTP_403_FORBIDDEN)
+
+        cluster = director.cluster
+        if not cluster:
+            return Response({'error': 'No cluster assigned'}, status=status.HTTP_400_BAD_REQUEST)
+
+        entities = cluster.entities.all()
+        num_entities = entities.count()
+        entity_names = [entity.name for entity in entities]
+
+        # Aggregated metrics
+        total_collaborators = 0
+        total_submissions_day = 0
+        total_submissions_week = 0
+        total_submissions_month = 0
+        total_participation_day = 0
+        total_participation_week = 0
+        total_participation_month = 0
+        entity_to_supervise = []  # Entities where any department_to_supervise exists
+
+        entities_data = []
+
+        for entity in entities:
+            departments = entity.departments.all()
+            collaborators = []
+            department_names = [dept.name for dept in departments]
+            department_to_supervise = []  # Departments in this entity needing supervision
+
+            # Find entity director
+            entity_director = entity.collaborators.filter(role='entity_director').first()
+            entity_director_name = f"{entity_director.first_name} {entity_director.last_name}" if entity_director else None
+
+            entity_total_collaborators = 0
+            entity_submissions_day = 0
+            entity_submissions_week = 0
+            entity_submissions_month = 0
+            entity_participation_day = 0
+            entity_participation_week = 0
+            entity_participation_month = 0
+
+            departments_data = []
+
+            for department in departments:
+                services = department.services.all()
+                service_names = [service.name for service in services]
+                service_to_supervise = []  # Services in this department needing supervision
+
+                # Find department director
+                dept_director = department.collaborators.filter(role='department_director').first()
+                dept_director_name = f"{dept_director.first_name} {dept_director.last_name}" if dept_director else None
+
+                department_total_collaborators = 0
+                department_submissions_day = 0
+                department_submissions_week = 0
+                department_submissions_month = 0
+                department_participation_day = 0
+                department_participation_week = 0
+                department_participation_month = 0
+
+                services_data = []
+
+                for service in services:
+                    service_collaborators = list(service.collaborators.all())
+                    collaborators += service_collaborators
+                    department_total_collaborators += len(service_collaborators)
+
+                    # Submissions
+                    submissions_day = get_emotions_for_period(service_collaborators, 'day').count()
+                    submissions_week = get_emotions_for_period(service_collaborators, 'week').count()
+                    submissions_month = get_emotions_for_period(service_collaborators, 'month').count()
+
+                    # Participation percentages
+                    percent_day = min(1.0, submissions_day / (len(service_collaborators) * 2) if len(
+                        service_collaborators) else 0) * 100
+                    week_days = [today + timedelta(days=i - today.weekday()) for i in range(5)]
+                    week_working_days = sum(1 for d in week_days if d.month == today.month)
+                    week_possible = len(service_collaborators) * week_working_days * 2
+                    percent_week = min(1.0, submissions_week / week_possible if week_possible > 0 else 0) * 100
+                    _, last_day = monthrange(year, month)
+                    month_working_days = sum(1 for i in range(1, last_day + 1) if weekday(year, month, i) < 5)
+                    month_possible = len(service_collaborators) * month_working_days * 2
+                    percent_month = min(1.0, submissions_month / month_possible if month_possible > 0 else 0) * 100
+
+                    # Emotion degree
+                    degree_day = sum([e.emotion_degree for e in get_emotions_for_period(service_collaborators, 'day')])
+                    degree_week = sum(
+                        [e.emotion_degree for e in get_emotions_for_period(service_collaborators, 'week')])
+                    degree_month = sum(
+                        [e.emotion_degree for e in get_emotions_for_period(service_collaborators, 'month')])
+
+                    humor_day = general_humor(degree_day)
+                    humor_week = general_humor(degree_week)
+                    humor_month = general_humor(degree_month)
+
+                    # Aggregate totals for department
+                    department_submissions_day += submissions_day
+                    department_submissions_week += submissions_week
+                    department_submissions_month += submissions_month
+                    department_participation_day += percent_day
+                    department_participation_week += percent_week
+                    department_participation_month += percent_month
+
+                    # For service_to_supervise
+                    if humor_day == "negative" or humor_week == "negative" or humor_month == "negative":
+                        service_to_supervise.append(service.name)
+
+                    manager = service.collaborators.filter(role='manager').first()
+                    employees = service.collaborators.filter(role='employee')
+
+                    services_data.append({
+                        'service_name': service.name,
+                        'manager_name': f"{manager.first_name} {manager.last_name}" if manager else None,
+                        'employees_names': [f"{emp.first_name} {emp.last_name}" for emp in employees],
+                        'total_collaborators': len(service_collaborators),
+                        'total_submissions_day': submissions_day,
+                        'total_submissions_week': submissions_week,
+                        'total_submissions_month': submissions_month,
+                        'participation_percentage_day': round(percent_day, 2),
+                        'participation_percentage_week': round(percent_week, 2),
+                        'participation_percentage_month': round(percent_month, 2),
+                        'general_humor_day': humor_day,
+                        'general_humor_week': humor_week,
+                        'general_humor_month': humor_month,
+                    })
+
+                # For total general humor: aggregate by majority
+                def aggregate_general_humor(services_data, period):
+                    humors = [service[f'general_humor_{period}'] for service in services_data]
+                    count_positive = humors.count("positive")
+                    count_negative = humors.count("negative")
+                    return "positive" if count_positive > count_negative else (
+                        "negative" if count_negative > count_positive else "neutral")
+
+                departments_data.append({
+                    'department_name': department.name,
+                    'department_director_name': dept_director_name,
+                    'service_names': service_names,
+                    'services': services_data,
+                    'total_collaborators': department_total_collaborators,
+                    'total_submissions_day': department_submissions_day,
+                    'total_submissions_week': department_submissions_week,
+                    'total_submissions_month': department_submissions_month,
+                    'participation_percentage_day': round(
+                        department_participation_day / len(services) if len(services) else 0, 2),
+                    'participation_percentage_week': round(
+                        department_participation_week / len(services) if len(services) else 0, 2),
+                    'participation_percentage_month': round(
+                        department_participation_month / len(services) if len(services) else 0, 2),
+                    'general_humor_day': aggregate_general_humor(services_data, 'day'),
+                    'general_humor_week': aggregate_general_humor(services_data, 'week'),
+                    'general_humor_month': aggregate_general_humor(services_data, 'month'),
+                    'service_to_supervise': service_to_supervise,
+                })
+
+                entity_total_collaborators += department_total_collaborators
+                entity_submissions_day += department_submissions_day
+                entity_submissions_week += department_submissions_week
+                entity_submissions_month += department_submissions_month
+                entity_participation_day += department_participation_day / len(services) if len(services) else 0
+                entity_participation_week += department_participation_week / len(services) if len(services) else 0
+                entity_participation_month += department_participation_month / len(services) if len(services) else 0
+                if service_to_supervise:
+                    department_to_supervise.append(department.name)
+
+            def aggregate_general_humor(departments_data, period):
+                humors = [dept[f'general_humor_{period}'] for dept in departments_data]
+                count_positive = humors.count("positive")
+                count_negative = humors.count("negative")
+                return "positive" if count_positive > count_negative else (
+                    "negative" if count_negative > count_positive else "neutral")
+
+            entities_data.append({
+                'entity_name': entity.name,
+                'entity_director_name': entity_director_name,
+                'department_names': department_names,
+                'departments': departments_data,
+                'total_collaborators': entity_total_collaborators,
+                'total_submissions_day': entity_submissions_day,
+                'total_submissions_week': entity_submissions_week,
+                'total_submissions_month': entity_submissions_month,
+                'participation_percentage_day': round(
+                    entity_participation_day / len(departments) if len(departments) else 0, 2),
+                'participation_percentage_week': round(
+                    entity_participation_week / len(departments) if len(departments) else 0, 2),
+                'participation_percentage_month': round(
+                    entity_participation_month / len(departments) if len(departments) else 0, 2),
+                'general_humor_day': aggregate_general_humor(departments_data, 'day'),
+                'general_humor_week': aggregate_general_humor(departments_data, 'week'),
+                'general_humor_month': aggregate_general_humor(departments_data, 'month'),
+                'department_to_supervise': department_to_supervise,
+            })
+
+            total_collaborators += entity_total_collaborators
+            total_submissions_day += entity_submissions_day
+            total_submissions_week += entity_submissions_week
+            total_submissions_month += entity_submissions_month
+            total_participation_day += entity_participation_day / len(departments) if len(departments) else 0
+            total_participation_week += entity_participation_week / len(departments) if len(departments) else 0
+            total_participation_month += entity_participation_month / len(departments) if len(departments) else 0
+            if department_to_supervise:
+                entity_to_supervise.append(entity.name)
+
+        def aggregate_general_humor(entities_data, period):
+            humors = [ent[f'general_humor_{period}'] for ent in entities_data]
+            count_positive = humors.count("positive")
+            count_negative = humors.count("negative")
+            return "positive" if count_positive > count_negative else (
+                "negative" if count_negative > count_positive else "neutral")
+
+        return Response({
+            'cluster_name': cluster.name,
+            'entity_names': entity_names,
+            'num_entities': num_entities,
+            'entities': entities_data,
+            'total_collaborators': total_collaborators,
+            'total_submissions_day': total_submissions_day,
+            'total_submissions_week': total_submissions_week,
+            'total_submissions_month': total_submissions_month,
+            'participation_percentage_day': round(total_participation_day / num_entities if num_entities else 0, 2),
+            'participation_percentage_week': round(total_participation_week / num_entities if num_entities else 0, 2),
+            'participation_percentage_month': round(total_participation_month / num_entities if num_entities else 0, 2),
+            'general_humor_day': aggregate_general_humor(entities_data, 'day'),
+            'general_humor_week': aggregate_general_humor(entities_data, 'week'),
+            'general_humor_month': aggregate_general_humor(entities_data, 'month'),
+            'entity_to_supervise': entity_to_supervise,
         })
