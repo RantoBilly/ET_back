@@ -6,6 +6,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.exceptions import ValidationError
 from rest_framework_simplejwt.views import TokenObtainPairView
 from datetime import timedelta
+from calendar import weekday, monthrange
 
 from django.contrib.auth import logout
 from django.utils import timezone
@@ -13,6 +14,31 @@ from django.db.models import Q
 
 from .models import Emotion, EmotionType, Collaborator
 from .serializers import EmotionSerializer, CollaboratorCreateSerializer, CollaboratorDetailSerializer, EmotionTypeSerializer
+
+today = timezone.localdate()
+week_number = today.isocalendar()[1]
+year = today.year
+month = today.month
+
+def general_humor(degree):
+    if degree > 0:
+        return "positive"
+    elif degree < 0:
+        return "negative"
+    else:
+        return "neutral"
+
+
+# Helper to get emotion stats for a queryset of collaborators
+def get_emotions_for_period(collaborators, period):
+    emotions = Emotion.objects.filter(collaborator__in=collaborators)
+    if period == 'day':
+        emotions = emotions.filter(date__date=today)
+    elif period == 'week':
+        emotions = emotions.filter(week_number=week_number, year=year)
+    elif period == 'month':
+        emotions = emotions.filter(month=month, year=year)
+    return emotions
 
 
 class AuthViewSet(viewsets.ViewSet):
@@ -292,24 +318,11 @@ class EmotionOverviewSet(viewsets.ViewSet):
          Get emotion overview for the authenticated collaborator
         """
         collaborator = request.user
-        today = timezone.localdate()
-        week_number = today.isocalendar()[1]
-        month = today.month
-        year = today.year
 
         # Total number of submissions
         total_day = collaborator.emotions.filter(date__date=today).count()
         total_week = collaborator.emotions.filter(week_number=week_number, year=year).count()
         total_month = collaborator.emotions.filter(month=month, year=year).count()
-
-        # General humor: positive if degree > 0, negative if < 0, neutral if = 0
-        def general_humor(degree):
-            if degree > 0:
-                return "positive"
-            elif degree < 0:
-                return "negative"
-            else:
-                return "neutral"
 
         # Daily, weekly, monthly degrees
         degree_day = sum([e.emotion_degree for e in collaborator.emotions.filter(date__date=today)])
@@ -320,7 +333,6 @@ class EmotionOverviewSet(viewsets.ViewSet):
         # Day: 2 max (morning + evening)
         percent_day = min(1.0, total_day / 2.0) * 100
         # Week: number of working days (Mon-Fri) in current week
-        from calendar import weekday, monthrange
         week_days = [today + timedelta(days=i-today.weekday()) for i in range(5)]
         week_working_days = sum(1 for d in week_days if d.month == today.month)
         week_possible = week_working_days * 2
@@ -369,26 +381,10 @@ class ManagerOverViewSet(viewsets.ViewSet):
         if manager.role != 'manager':
             return Response({'error': 'You are not a manager'}, status=status.HTTP_403_FORBIDDEN)
 
-        today = timezone.localdate()
-        week_number = today.isocalendar()[1]
-        year = today.year
-        month = today.month
-
         # subordinates
         subordinates = manager.subordinates.all()
         subordinate_names = [f"{c.first_name} {c.last_name}" for c in subordinates]
         total_subordinates = subordinates.count()
-
-        # Helper to get emotion stats for a queryset of collaborators
-        def get_emotions_for_period(collaborators, period):
-            emotions = Emotion.objects.filter(collaborator__in=collaborators)
-            if period == 'day':
-                emotions = emotions.filter(date__date=today)
-            elif period == 'week':
-                emotions = emotions.filter(week_number=week_number, year=year)
-            elif period == 'month':
-                emotions = emotions.filter(month=month, year=year)
-            return emotions
 
         # count submission
         total_submissions_day = get_emotions_for_period(subordinates, 'day').count()
@@ -399,7 +395,6 @@ class ManagerOverViewSet(viewsets.ViewSet):
         # Day: 2 max per subordinates
         percent_day = min(1.0, total_submissions_day / (total_subordinates * 2) if total_subordinates > 0 else 0) * 100
         # week : working days in week
-        from calendar import weekday, monthrange
         week_days = [today + timedelta(days=i-today.weekday()) for i in range(5)]
         week_working_days = sum(1 for d in week_days if d.month == today.month)
         week_possible = total_subordinates * week_working_days * 2
@@ -415,14 +410,6 @@ class ManagerOverViewSet(viewsets.ViewSet):
         degree_day = sum([e.emotion_degree for e in get_emotions_for_period(subordinates, 'day')])
         degree_week = sum([e.emotion_degree for e in get_emotions_for_period(subordinates, 'week')])
         degree_month = sum([e.emotion_degree for e in get_emotions_for_period(subordinates, 'month')])
-
-        def general_humor(degree):
-            if degree > 0:
-                return "positive"
-            elif degree < 0:
-                return "negative"
-            else:
-                return "neutral"
 
         def get_emotion_label(degree):
             if degree <= -5:
@@ -481,4 +468,134 @@ class ManagerOverViewSet(viewsets.ViewSet):
             'general_humor_week': general_humor_week,
             'general_humor_month': general_humor_month,
             'subordinates_to_supervise': subordinates_to_supervise,
+        })
+
+
+class DepartmentDirectorOverviewSet(viewsets.ViewSet):
+    """
+    Provides an overview for a department director about their department and its services
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['GET'], url_path='department-director-overview')
+    def department_director_overview(self, request):
+        director = request.user
+
+        # Ensure the user is a department director
+        if director.role != 'department_director':
+            return Response({'error': 'You are not a department director'}, status=status.HTTP_403_FORBIDDEN)
+
+        department = director.department
+        if not department:
+            return Response({'error': 'No department assigned'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+        services = department.services.all()
+        num_services = services.count()
+        service_names = [service.name for service in services]
+
+        # Aggrecated metrics
+        total_collaborators = 0
+        total_submissions_day = 0
+        total_submissions_week = 0
+        total_submissions_month = 0
+        total_participation_day = 0
+        total_participation_week = 0
+        total_participation_month = 0
+        total_general_humor_day = 0
+        total_general_humor_week = 0
+        total_general_humor_month = 0
+        service_to_supervise = []
+
+        services_data = []
+
+        for service in services:
+            collaborators = service.collaborators.all()
+            manager = collaborators.filter(role='manager').first()
+            employees = collaborators.filter(role='employee')
+            total_collaborators += collaborators.count()
+
+            # Submissions
+            submissions_day = get_emotions_for_period(collaborators, 'day').count()
+            submissions_week = get_emotions_for_period(collaborators, 'week').count()
+            submissions_month = get_emotions_for_period(collaborators, 'month').count()
+
+            # Participation percentages
+            # Day: 2 per collaborator
+            percent_day = min(1.0, submissions_day / (collaborators.count() * 2) if collaborators.count() else 0) * 100
+            # Week: working days
+            week_days = [today + timedelta(days=i - today.weekday()) for i in range(5)]
+            week_working_days = sum(1 for d in week_days if d.month == today.month)
+            week_possible = collaborators.count() * week_working_days * 2
+            percent_week = min(1.0, submissions_week / week_possible if week_possible > 0 else 0) * 100
+            # Month: working days
+            _, last_day = monthrange(year, month)
+            month_working_days = sum(1 for i in range(1, last_day + 1) if weekday(year, month, i) < 5)
+            month_possible = collaborators.count() * month_working_days * 2
+            percent_month = min(1.0, submissions_month / month_possible if month_possible > 0 else 0) * 100
+
+            # Emotion degree
+            degree_day = sum([e.emotion_degree for e in get_emotions_for_period(collaborators, 'day')])
+            degree_week = sum([e.emotion_degree for e in get_emotions_for_period(collaborators, 'week')])
+            degree_month = sum([e.emotion_degree for e in get_emotions_for_period(collaborators, 'month')])
+
+            humor_day = general_humor(degree_day)
+            humor_week = general_humor(degree_week)
+            humor_month = general_humor(degree_month)
+
+            # Aggregate total metrics
+            total_submissions_day += submissions_day
+            total_submissions_week += submissions_week
+            total_submissions_month += submissions_month
+            total_participation_day += percent_day
+            total_participation_week += percent_week
+            total_participation_month += percent_month
+
+            # For general_humor, count negative (for service_to_supervise)
+            if humor_day == "negative" or humor_week == "negative" or humor_month == "negative":
+                service_to_supervise.append(service.name)
+
+                # Service metrics
+                services_data.append({
+                    'service_name': service.name,
+                    'manager_name': f"{manager.first_name} {manager.last_name}" if manager else None,
+                    'employees_names': [f"{emp.first_name} {emp.last_name}" for emp in employees],
+                    'total_collaborators': collaborators.count(),
+                    'total_submissions_day': submissions_day,
+                    'total_submissions_week': submissions_week,
+                    'total_submissions_month': submissions_month,
+                    'participation_percentage_day': round(percent_day, 2),
+                    'participation_percentage_week': round(percent_week, 2),
+                    'participation_percentage_month': round(percent_month, 2),
+                    'general_humor_day': humor_day,
+                    'general_humor_week': humor_week,
+                    'general_humor_month': humor_month,
+                })
+
+        # For total general humor: sum up humor scores, or aggregate as needed (here, simply count negatives/positives)
+        # For simplicity, below shows the average participation and majority general humor
+        def aggregate_general_humor(services_data, period):
+            humors = [service[f'general_humor_{period}'] for service in services_data]
+            count_positive = humors.count("positive")
+            count_negative = humors.count("negative")
+            return "positive" if count_positive > count_negative else (
+                "negative" if count_negative > count_positive else "neutral")
+
+        return Response({
+            'department_name': department.name,
+            'num_services': num_services,
+            'service_names': service_names,
+            'services': services_data,
+            'total_collaborators': total_collaborators,
+            'total_submissions_day': total_submissions_day,
+            'total_submissions_week': total_submissions_week,
+            'total_submissions_month': total_submissions_month,
+            'participation_percentage_day': round(total_participation_day / num_services if num_services else 0, 2),
+            'participation_percentage_week': round(total_participation_week / num_services if num_services else 0, 2),
+            'participation_percentage_month': round(total_participation_month / num_services if num_services else 0, 2),
+            'general_humor_day': aggregate_general_humor(services_data, 'day'),
+            'general_humor_week': aggregate_general_humor(services_data, 'week'),
+            'general_humor_month': aggregate_general_humor(services_data, 'month'),
+            'service_to_supervise': service_to_supervise,
         })
