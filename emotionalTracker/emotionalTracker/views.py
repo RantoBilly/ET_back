@@ -352,3 +352,133 @@ class EmotionOverviewSet(viewsets.ViewSet):
             'participation_percentage_week': round(percent_week, 2),
             'participation_percentage_month': round(percent_month, 2)
         })
+
+
+class ManagerOverViewSet(viewsets.ViewSet):
+    """
+    Provides an overview for a manager about their subordinates
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['GET'], url_path='manager-overview')
+    def manager_overview(self, request):
+        manager = request.user
+
+        # Ensure the user is a manager
+        if manager.role != 'manager':
+            return Response({'error': 'You are not a manager'}, status=status.HTTP_403_FORBIDDEN)
+
+        today = timezone.localdate()
+        week_number = today.isocalendar()[1]
+        year = today.year
+        month = today.month
+
+        # subordinates
+        subordinates = manager.subordinates.all()
+        subordinate_names = [f"{c.first_name} {c.last_name}" for c in subordinates]
+        total_subordinates = subordinates.count()
+
+        # Helper to get emotion stats for a queryset of collaborators
+        def get_emotions_for_period(collaborators, period):
+            emotions = Emotion.objects.filter(collaborator__in=collaborators)
+            if period == 'day':
+                emotions = emotions.filter(date__date=today)
+            elif period == 'week':
+                emotions = emotions.filter(week_number=week_number, year=year)
+            elif period == 'month':
+                emotions = emotions.filter(month=month, year=year)
+            return emotions
+
+        # count submission
+        total_submissions_day = get_emotions_for_period(subordinates, 'day').count()
+        total_submissions_week = get_emotions_for_period(subordinates, 'week').count()
+        total_submissions_month = get_emotions_for_period(subordinates, 'month').count()
+
+        # Participation percentage
+        # Day: 2 max per subordinates
+        percent_day = min(1.0, total_submissions_day / (total_subordinates * 2) if total_subordinates > 0 else 0) * 100
+        # week : working days in week
+        from calendar import weekday, monthrange
+        week_days = [today + timedelta(days=i-today.weekday()) for i in range(5)]
+        week_working_days = sum(1 for d in week_days if d.month == today.month)
+        week_possible = total_subordinates * week_working_days * 2
+        percent_week = min(1.0, total_submissions_week / week_possible if week_possible > 0 else 0) * 100
+
+        # Month: working days in month
+        _, last_day = monthrange(year, month)
+        month_working_days = sum(1 for i in range(1, last_day+1) if weekday(year, month, i) < 5)
+        month_possible = total_subordinates * month_working_days * 2
+        percent_month = min(1.0, total_submissions_month / month_possible if month_possible > 0 else 0) * 100
+
+        # Emotion degree for all subordinates
+        degree_day = sum([e.emotion_degree for e in get_emotions_for_period(subordinates, 'day')])
+        degree_week = sum([e.emotion_degree for e in get_emotions_for_period(subordinates, 'week')])
+        degree_month = sum([e.emotion_degree for e in get_emotions_for_period(subordinates, 'month')])
+
+        def general_humor(degree):
+            if degree > 0:
+                return "positive"
+            elif degree < 0:
+                return "negative"
+            else:
+                return "neutral"
+
+        def get_emotion_label(degree):
+            if degree <= -5:
+                return "angry"
+            elif degree <= -2:
+                return "anxious"
+            elif degree <= -1:
+                return "sad"
+            elif degree == 0:
+                return "neutral"
+            elif 0 < degree < 5:
+                return "happy"
+            elif degree >= 5:
+                return "excited"
+            return "neutral"
+
+        emotion_today = get_emotion_label(degree_day)
+        emotion_this_week = get_emotion_label(degree_week)
+        emotion_this_month = get_emotion_label(degree_month)
+
+        # general humor
+        general_humor_day = general_humor(degree_day)
+        general_humor_week = general_humor(degree_week)
+        general_humor_month = general_humor(degree_month)
+
+        # Subordinates to supervise (those with negative emotion_degree today, week or month)
+        subordinates_to_supervise = []
+        for subordinate in subordinates:
+            if (
+                subordinate.emotion_degree_this_week < 0
+                or subordinate.emotion_degree_this_month < 0
+                or sum([e.emotion_degree for e in subordinate.emotions.filter(date__date=today)]) < 0
+            ):
+                subordinates_to_supervise.append(f"{subordinate.first_name} {subordinate.last_name}")
+
+        # Service name
+        service_name = manager.service.name if manager.service else None
+
+        return Response({
+            'service_name ': service_name,
+            'subordinate_names': subordinate_names,
+            'total_subordinates': total_subordinates,
+            'total_submissions_day': total_submissions_day,
+            'total_submissions_week': total_submissions_week,
+            'total_submissions_month': total_submissions_month,
+            'participation_percentage_day': round(percent_day, 2),
+            'participation_percentage_week': round(percent_week, 2),
+            'participation_percentage_month': round(percent_month, 2),
+            'emotion_degree_day': degree_day,
+            'emotion_degree_week': degree_week,
+            'emotion_degree_month': degree_month,
+            'emotion_today': emotion_today,
+            'emotion_this_week': emotion_this_week,
+            'emotion_this_month': emotion_this_month,
+            'general_humor_day': general_humor_day,
+            'general_humor_week': general_humor_week,
+            'general_humor_month': general_humor_month,
+            'subordinates_to_supervise': subordinates_to_supervise,
+        })
