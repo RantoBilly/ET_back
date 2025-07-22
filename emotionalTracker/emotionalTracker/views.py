@@ -7,6 +7,9 @@ from django.core.exceptions import ValidationError
 from rest_framework_simplejwt.views import TokenObtainPairView
 from datetime import timedelta
 from calendar import weekday, monthrange
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from django.http import HttpResponse
 
 from django.contrib.auth import logout
 from django.utils import timezone
@@ -512,7 +515,18 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
 
         for service in services:
             collaborators = service.collaborators.all()
+
+            collaborators_to_supervise = []
+            for collaborator in service.collaborators.all():
+                if (
+                    collaborator.emotion_degree_this_week < 0
+                    or collaborator.emotion_degree_this_month < 0
+                    or sum(e.emotion_degree for e in collaborator.emotions.filter(date__date=today)) < 0
+                ):
+                    collaborators_to_supervise.append(f"{collaborator.first_name} {collaborator.last_name}")
+
             manager = collaborators.filter(role='manager').first()
+
             employees = collaborators.filter(role='employee')
             total_collaborators += collaborators.count()
 
@@ -571,6 +585,7 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
                 'general_humor_day': humor_day,
                 'general_humor_week': humor_week,
                 'general_humor_month': humor_month,
+                'collaborators_to_supervise': collaborators_to_supervise,
             })
 
         # For total general humor: sum up humor scores, or aggregate as needed (here, simply count negatives/positives)
@@ -600,6 +615,84 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
             'service_to_supervise': service_to_supervise,
         })
 
+    @action(detail=False, methods=['GET'], url_path='department-director-reporting-pdf')
+    def department_director_reporting_pdf(self, request):
+        director = request.user
+
+        # Get the data as you do in department_director_overview
+        if director.role != 'department_director':
+            return Response({'error': 'You are not a department director'}, status=status.HTTP_403_FORBIDDEN)
+
+        department = director.department
+        if not department:
+            return Response({'error': 'No department assigned'}, status=status.HTTP_400_BAD_REQUEST)
+
+        overview = self.department_director_overview(request).data
+
+        # Create PDF
+        response = HttpResponse(content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="department_report.pdf"'
+
+        p = canvas.Canvas(response, pagesize=A4)
+        width, height = A4
+        y = height - 40
+
+        # Title
+        p.setFont("Helvetica-Bold", 16)
+        p.drawString(40, y, f"Department Report: {overview['department_name']}")
+        y -= 25
+
+        # General metrics
+        p.setFont("Helvetica", 12)
+        for key in [
+            'num_services', 'total_collaborators',
+            'total_submissions_day', 'total_submissions_week', 'total_submissions_month',
+            'participation_percentage_day', 'participation_percentage_week', 'participation_percentage_month',
+            'general_humor_day', 'general_humor_week', 'general_humor_month'
+        ]:
+            p.drawString(40, y, f"{key.replace('_', ' ').capitalize()}: {overview[key]}")
+            y -= 18
+
+        # Services Header
+        y -= 10
+        p.setFont("Helvetica-Bold", 14)
+        p.drawString(40, y, "Services:")
+        y -= 23
+        p.setFont("Helvetica", 11)
+
+        for service in overview['services']:
+            if y < 80:
+                p.showPage()
+                y = height - 40
+            p.drawString(48, y, f"Service Name: {service['service_name']}")
+            y -= 15
+            p.drawString(60, y, f"Manager: {service['manager_name']}")
+            y -= 15
+            p.drawString(60, y, f"Employees: {', '.join(service['employees_names'])}")
+            y -= 15
+            p.drawString(60, y, f"Total Collaborators: {service['total_collaborators']}")
+            y -= 15
+            p.drawString(60, y,
+                         f"Total Submissions (Day/Week/Month): {service['total_submissions_day']}/{service['total_submissions_week']}/{service['total_submissions_month']}")
+            y -= 15
+            p.drawString(60, y,
+                         f"Participation % (Day/Week/Month): {service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}")
+            y -= 15
+            p.drawString(60, y,
+                         f"General Humor (Day/Week/Month): {service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}")
+            y -= 15
+            p.drawString(60, y, f"Collaborators to supervise: {', '.join(service['collaborators_to_supervise'])}")
+            y -= 20
+
+        # Footer: services to supervise
+        if y < 80:
+            p.showPage()
+            y = height - 40
+        p.setFont("Helvetica-Bold", 13)
+        p.drawString(40, y, f"Services to supervise: {', '.join(overview['service_to_supervise'])}")
+
+        p.save()
+        return response
 
 class EntityDirectorOverviewSet(viewsets.ViewSet):
     """
@@ -661,6 +754,15 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
                 collaborators += service_collaborators
                 department_total_collaborators += len(service_collaborators)
 
+                collaborators_to_supervise = []
+                for collaborator in service.collaborators.all():
+                    if (
+                            collaborator.emotion_degree_this_week < 0
+                            or collaborator.emotion_degree_this_month < 0
+                            or sum(e.emotion_degree for e in collaborator.emotions.filter(date__date=today)) < 0
+                    ):
+                        collaborators_to_supervise.append(f"{collaborator.first_name} {collaborator.last_name}")
+
                 # Submissions
                 submissions_day = get_emotions_for_period(service_collaborators, 'day').count()
                 submissions_week = get_emotions_for_period(service_collaborators, 'week').count()
@@ -716,6 +818,7 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
                     'general_humor_day': humor_day,
                     'general_humor_week': humor_week,
                     'general_humor_month': humor_month,
+                    'collaborators_to_supervise': collaborators_to_supervise,
                 })
 
             # For total general humor: aggregate by majority
@@ -785,6 +888,114 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
             'general_humor_month': aggregate_general_humor(departments_data, 'month'),
             'department_to_supervise': department_to_supervise,
         })
+
+    @action(detail=False, methods=['GET'], url_path='entity-director-reporting-pdf')
+    def entity_director_reporting_pdf(self, request):
+        director = request.user
+
+        # Get the data as you do in entity_director_overview
+        if director.role != 'entity_director':
+            return Response({'error': 'You are not an entity director'}, status=status.HTTP_403_FORBIDDEN)
+
+        entity = director.entity
+        if not entity:
+            return Response({'error': 'No entity assigned'}, status=status.HTTP_400_BAD_REQUEST)
+
+        overview = self.entity_director_overview(request).data
+
+        # Create PDF
+        response = HttpResponse(content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="entity_report.pdf"'
+
+        p = canvas.Canvas(response, pagesize=A4)
+        width, height = A4
+        y = height - 40
+
+        # Title
+        p.setFont("Helvetica-Bold", 16)
+        p.drawString(40, y, f"Entity Report: {overview['entity_name']}")
+        y -= 25
+
+        # General metrics
+        p.setFont("Helvetica", 12)
+        for key in [
+            'num_departments', 'total_collaborators',
+            'total_submissions_day', 'total_submissions_week', 'total_submissions_month',
+            'participation_percentage_day', 'participation_percentage_week', 'participation_percentage_month',
+            'general_humor_day', 'general_humor_week', 'general_humor_month'
+        ]:
+            p.drawString(40, y, f"{key.replace('_', ' ').capitalize()}: {overview.get(key, '')}")
+            y -= 18
+
+        # Departments Header
+        y -= 10
+        p.setFont("Helvetica-Bold", 14)
+        p.drawString(40, y, "Departments:")
+        y -= 23
+        p.setFont("Helvetica", 11)
+
+        for department in overview['departments']:
+            if y < 80:
+                p.showPage()
+                y = height - 40
+            p.setFont("Helvetica-Bold", 12)
+            p.drawString(48, y, f"Department Name: {department['department_name']}")
+            y -= 15
+            p.setFont("Helvetica", 11)
+            p.drawString(60, y, f"Director: {department.get('department_director_name', '')}")
+            y -= 15
+            p.drawString(60, y, f"Services: {', '.join(department['service_names'])}")
+            y -= 15
+            p.drawString(60, y, f"Total Collaborators: {department['total_collaborators']}")
+            y -= 15
+            p.drawString(60, y,
+                         f"Total Submissions (Day/Week/Month): {department['total_submissions_day']}/{department['total_submissions_week']}/{department['total_submissions_month']}")
+            y -= 15
+            p.drawString(60, y,
+                         f"Participation % (Day/Week/Month): {department['participation_percentage_day']} / {department['participation_percentage_week']} / {department['participation_percentage_month']}")
+            y -= 15
+            p.drawString(60, y,
+                         f"General Humor (Day/Week/Month): {department['general_humor_day']} / {department['general_humor_week']} / {department['general_humor_month']}")
+            y -= 15
+            p.drawString(60, y, f"Services to supervise: {', '.join(department['service_to_supervise'])}")
+            y -= 20
+
+            # List services details
+            for service in department['services']:
+                if y < 80:
+                    p.showPage()
+                    y = height - 40
+                p.setFont("Helvetica-Oblique", 11)
+                p.drawString(75, y, f"Service Name: {service['service_name']}")
+                y -= 15
+                p.drawString(85, y, f"Manager: {service.get('manager_name', '')}")
+                y -= 15
+                p.drawString(85, y, f"Employees: {', '.join(service['employees_names'])}")
+                y -= 15
+                p.drawString(85, y, f"Total Collaborators: {service['total_collaborators']}")
+                y -= 15
+                p.drawString(85, y,
+                             f"Total Submissions (Day/Week/Month): {service['total_submissions_day']}/{service['total_submissions_week']}/{service['total_submissions_month']}")
+                y -= 15
+                p.drawString(85, y,
+                             f"Participation % (Day/Week/Month): {service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}")
+                y -= 15
+                p.drawString(85, y,
+                             f"General Humor (Day/Week/Month): {service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}")
+                y -= 15
+                p.drawString(85, y, f"Collaborators to supervise: {', '.join(service['collaborators_to_supervise'])}")
+                y -= 20
+
+        # Footer: departments to supervise
+        if y < 80:
+            p.showPage()
+            y = height - 40
+        p.setFont("Helvetica-Bold", 13)
+        p.drawString(40, y,
+                        f"Departments to supervise: {', '.join(overview.get('department_to_supervise', []))}")
+
+        p.save()
+        return response
 
 
 class PoleDirectorOverviewSet(viewsets.ViewSet):
@@ -866,6 +1077,15 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                     collaborators += service_collaborators
                     department_total_collaborators += len(service_collaborators)
 
+                    collaborators_to_supervise = []
+                    for collaborator in service.collaborators.all():
+                        if (
+                                collaborator.emotion_degree_this_week < 0
+                                or collaborator.emotion_degree_this_month < 0
+                                or sum(e.emotion_degree for e in collaborator.emotions.filter(date__date=today)) < 0
+                        ):
+                            collaborators_to_supervise.append(f"{collaborator.first_name} {collaborator.last_name}")
+
                     # Submissions
                     submissions_day = get_emotions_for_period(service_collaborators, 'day').count()
                     submissions_week = get_emotions_for_period(service_collaborators, 'week').count()
@@ -923,6 +1143,7 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                         'general_humor_day': humor_day,
                         'general_humor_week': humor_week,
                         'general_humor_month': humor_month,
+                        'collaborators_to_supervise': collaborators_to_supervise,
                     })
 
                 # For total general humor: aggregate by majority
@@ -1025,4 +1246,141 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
             'general_humor_week': aggregate_general_humor(entities_data, 'week'),
             'general_humor_month': aggregate_general_humor(entities_data, 'month'),
             'entity_to_supervise': entity_to_supervise,
+
         })
+
+    @action(detail=False, methods=['GET'], url_path='pole-director-reporting-pdf')
+    def pole_director_reporting_pdf(self, request):
+        director = request.user
+
+        # Get the data as you do in pole_director_overview
+        if director.role != 'pole_director':
+            return Response({'error': 'You are not a pole director'}, status=status.HTTP_403_FORBIDDEN)
+
+        cluster = director.cluster
+        if not cluster:
+            return Response({'error': 'No cluster assigned'}, status=status.HTTP_400_BAD_REQUEST)
+
+        overview = self.pole_director_overview(request).data
+
+        # Create PDF
+        response = HttpResponse(content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="cluster_report.pdf"'
+
+        p = canvas.Canvas(response, pagesize=A4)
+        width, height = A4
+        y = height - 40
+
+        # Title
+        p.setFont("Helvetica-Bold", 16)
+        p.drawString(40, y, f"Cluster Report: {overview['cluster_name']}")
+        y -= 25
+
+        # General metrics
+        p.setFont("Helvetica", 12)
+        for key in [
+            'num_entities', 'total_collaborators',
+            'total_submissions_day', 'total_submissions_week', 'total_submissions_month',
+            'participation_percentage_day', 'participation_percentage_week', 'participation_percentage_month',
+            'general_humor_day', 'general_humor_week', 'general_humor_month'
+        ]:
+            p.drawString(40, y, f"{key.replace('_', ' ').capitalize()}: {overview.get(key, '')}")
+            y -= 18
+
+        # Entities Header
+        y -= 10
+        p.setFont("Helvetica-Bold", 14)
+        p.drawString(40, y, "Entities:")
+        y -= 23
+        p.setFont("Helvetica", 11)
+
+        for entity in overview['entities']:
+            if y < 80:
+                p.showPage()
+                y = height - 40
+            p.setFont("Helvetica-Bold", 12)
+            p.drawString(48, y, f"Entity Name: {entity['entity_name']}")
+            y -= 15
+            p.setFont("Helvetica", 11)
+            p.drawString(60, y, f"Director: {entity.get('entity_director_name', '')}")
+            y -= 15
+            p.drawString(60, y, f"Departments: {', '.join(entity['department_names'])}")
+            y -= 15
+            p.drawString(60, y, f"Total Collaborators: {entity['total_collaborators']}")
+            y -= 15
+            p.drawString(60, y,
+                         f"Total Submissions (Day/Week/Month): {entity['total_submissions_day']}/{entity['total_submissions_week']}/{entity['total_submissions_month']}")
+            y -= 15
+            p.drawString(60, y,
+                         f"Participation % (Day/Week/Month): {entity['participation_percentage_day']} / {entity['participation_percentage_week']} / {entity['participation_percentage_month']}")
+            y -= 15
+            p.drawString(60, y,
+                         f"General Humor (Day/Week/Month): {entity['general_humor_day']} / {entity['general_humor_week']} / {entity['general_humor_month']}")
+            y -= 15
+            p.drawString(60, y, f"Departments to supervise: {', '.join(entity['department_to_supervise'])}")
+            y -= 20
+
+            # List department details
+            for department in entity['departments']:
+                if y < 80:
+                    p.showPage()
+                    y = height - 40
+                p.setFont("Helvetica-Bold", 11)
+                p.drawString(75, y, f"Department Name: {department['department_name']}")
+                y -= 15
+                p.setFont("Helvetica", 11)
+                p.drawString(85, y, f"Director: {department.get('department_director_name', '')}")
+                y -= 15
+                p.drawString(85, y, f"Services: {', '.join(department['service_names'])}")
+                y -= 15
+                p.drawString(85, y, f"Total Collaborators: {department['total_collaborators']}")
+                y -= 15
+                p.drawString(85, y,
+                             f"Total Submissions (Day/Week/Month): {department['total_submissions_day']}/{department['total_submissions_week']}/{department['total_submissions_month']}")
+                y -= 15
+                p.drawString(85, y,
+                             f"Participation % (Day/Week/Month): {department['participation_percentage_day']} / {department['participation_percentage_week']} / {department['participation_percentage_month']}")
+                y -= 15
+                p.drawString(85, y,
+                             f"General Humor (Day/Week/Month): {department['general_humor_day']} / {department['general_humor_week']} / {department['general_humor_month']}")
+                y -= 15
+                p.drawString(85, y, f"Services to supervise: {', '.join(department['service_to_supervise'])}")
+                y -= 20
+
+                # List service details
+                for service in department['services']:
+                    if y < 80:
+                        p.showPage()
+                        y = height - 40
+                    p.setFont("Helvetica-Oblique", 11)
+                    p.drawString(100, y, f"Service Name: {service['service_name']}")
+                    y -= 15
+                    p.drawString(110, y, f"Manager: {service.get('manager_name', '')}")
+                    y -= 15
+                    p.drawString(110, y, f"Employees: {', '.join(service['employees_names'])}")
+                    y -= 15
+                    p.drawString(110, y, f"Total Collaborators: {service['total_collaborators']}")
+                    y -= 15
+                    p.drawString(110, y,
+                                 f"Total Submissions (Day/Week/Month): {service['total_submissions_day']}/{service['total_submissions_week']}/{service['total_submissions_month']}")
+                    y -= 15
+                    p.drawString(110, y,
+                                 f"Participation % (Day/Week/Month): {service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}")
+                    y -= 15
+                    p.drawString(110, y,
+                                 f"General Humor (Day/Week/Month): {service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}")
+                    y -= 15
+                    p.drawString(110, y,
+                                 f"Collaborators to supervise: {', '.join(service['collaborators_to_supervise'])}")
+                    y -= 20
+
+        # Footer: entities to supervise
+        if y < 80:
+            p.showPage()
+            y = height - 40
+        p.setFont("Helvetica-Bold", 13)
+        p.drawString(40, y,
+                        f"Entities to supervise: {', '.join(overview.get('entity_to_supervise', []))}")
+
+        p.save()
+        return response
