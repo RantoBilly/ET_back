@@ -7,9 +7,14 @@ from django.core.exceptions import ValidationError
 from rest_framework_simplejwt.views import TokenObtainPairView
 from datetime import timedelta
 from calendar import weekday, monthrange
+
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from django.http import HttpResponse
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
 
 from django.contrib.auth import logout
 from django.utils import timezone
@@ -633,66 +638,81 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
         response = HttpResponse(content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="department_report.pdf"'
 
-        p = canvas.Canvas(response, pagesize=A4)
-        width, height = A4
-        y = height - 40
+        doc = SimpleDocTemplate(response, pagesize=A4, topMargin=2 * cm, bottomMargin=2 * cm)
+
+        styles = getSampleStyleSheet()
+        elements = []
+
+        # Custom styles
+        title_style = ParagraphStyle(name='Title', fontSize=18, textColor=colors.HexColor("#002b49"), spaceAfter=12)
+        header_style = ParagraphStyle(name='Header', fontSize=14, textColor=colors.black, spaceBefore=12, spaceAfter=6)
+        normal_style = ParagraphStyle(name='Normal', fontSize=10, textColor=colors.black)
+        bold_style = ParagraphStyle(name='Bold', fontSize=10, textColor=colors.black, spaceAfter=6, leading=14)
 
         # Title
-        p.setFont("Helvetica-Bold", 16)
-        p.drawString(40, y, f"Department Report: {overview['department_name']}")
-        y -= 25
+        elements.append(Paragraph(f"Reporting – Département : {overview['department_name']}", title_style))
+        elements.append(Spacer(1, 12))
 
-        # General metrics
-        p.setFont("Helvetica", 12)
-        for key in [
-            'num_services', 'total_collaborators',
-            'total_submissions_day', 'total_submissions_week', 'total_submissions_month',
-            'participation_percentage_day', 'participation_percentage_week', 'participation_percentage_month',
-            'general_humor_day', 'general_humor_week', 'general_humor_month'
-        ]:
-            p.drawString(40, y, f"{key.replace('_', ' ').capitalize()}: {overview[key]}")
-            y -= 18
+        # General Stats Table
+        general_data = [
+            ['Nombre de services', overview['num_services']],
+            ['Total collaborateurs', overview['total_collaborators']],
+            ['Soumissions (Jour/Semaine/Mois)',
+             f"{overview['total_submissions_day']} / {overview['total_submissions_week']} / {overview['total_submissions_month']}"],
+            ['Participation (%) (J/S/M)',
+             f"{overview['participation_percentage_day']} / {overview['participation_percentage_week']} / {overview['participation_percentage_month']}"],
+            ['Humeur générale (J/S/M)',
+             f"{overview['general_humor_day']} / {overview['general_humor_week']} / {overview['general_humor_month']}"],
+        ]
+        table = Table(general_data, colWidths=[7 * cm, 8 * cm])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#002b49")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#f2f2f2")),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 18))
 
-        # Services Header
-        y -= 10
-        p.setFont("Helvetica-Bold", 14)
-        p.drawString(40, y, "Services:")
-        y -= 23
-        p.setFont("Helvetica", 11)
-
+        # Service details
+        elements.append(Paragraph("Détails des services :", header_style))
         for service in overview['services']:
-            if y < 80:
-                p.showPage()
-                y = height - 40
-            p.drawString(48, y, f"Service Name: {service['service_name']}")
-            y -= 15
-            p.drawString(60, y, f"Manager: {service['manager_name']}")
-            y -= 15
-            p.drawString(60, y, f"Employees: {', '.join(service['employees_names'])}")
-            y -= 15
-            p.drawString(60, y, f"Total Collaborators: {service['total_collaborators']}")
-            y -= 15
-            p.drawString(60, y,
-                         f"Total Submissions (Day/Week/Month): {service['total_submissions_day']}/{service['total_submissions_week']}/{service['total_submissions_month']}")
-            y -= 15
-            p.drawString(60, y,
-                         f"Participation % (Day/Week/Month): {service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}")
-            y -= 15
-            p.drawString(60, y,
-                         f"General Humor (Day/Week/Month): {service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}")
-            y -= 15
-            p.drawString(60, y, f"Collaborators to supervise: {', '.join(service['collaborators_to_supervise'])}")
-            y -= 20
+            data = [
+                ['Nom du service', service['service_name']],
+                ['Manager', service['manager_name'] or 'Non assigné'],
+                ['Collaborateurs', ', '.join(service['employees_names'])],
+                ['Total collaborateurs', service['total_collaborators']],
+                ['Soumissions (J/S/M)',
+                 f"{service['total_submissions_day']} / {service['total_submissions_week']} / {service['total_submissions_month']}"],
+                ['Participation % (J/S/M)',
+                 f"{service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}"],
+                ['Humeur générale (J/S/M)',
+                 f"{service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}"],
+                ['À superviser', ', '.join(service['collaborators_to_supervise']) or '—']
+            ]
+            service_table = Table(data, colWidths=[6.5 * cm, 8.5 * cm])
+            service_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#dce3ea")),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+                ('GRID', (0, 0), (-1, -1), 0.3, colors.grey),
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ]))
+            elements.append(service_table)
+            elements.append(Spacer(1, 12))
 
-        # Footer: services to supervise
-        if y < 80:
-            p.showPage()
-            y = height - 40
-        p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, y, f"Services to supervise: {', '.join(overview['service_to_supervise'])}")
+        # Services à superviser
+        elements.append(Paragraph("Services à superviser :", header_style))
+        service_list = ', '.join(overview['service_to_supervise']) or 'Aucun'
+        elements.append(Paragraph(service_list, normal_style))
 
-        p.save()
+        doc.build(elements)
         return response
+
 
 class EntityDirectorOverviewSet(viewsets.ViewSet):
     """
@@ -907,94 +927,107 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
         response = HttpResponse(content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="entity_report.pdf"'
 
-        p = canvas.Canvas(response, pagesize=A4)
-        width, height = A4
-        y = height - 40
+        doc = SimpleDocTemplate(response, pagesize=A4, topMargin=2 * cm, bottomMargin=2 * cm)
+
+        styles = getSampleStyleSheet()
+        elements = []
+
+        # Custom styles
+        title_style = ParagraphStyle(name='Title', fontSize=18, textColor=colors.HexColor("#002b49"), spaceAfter=12)
+        header_style = ParagraphStyle(name='Header', fontSize=14, textColor=colors.black, spaceBefore=12, spaceAfter=6)
+        normal_style = ParagraphStyle(name='Normal', fontSize=10, textColor=colors.black)
+        bold_style = ParagraphStyle(name='Bold', fontSize=10, textColor=colors.black, spaceAfter=6, leading=14)
 
         # Title
-        p.setFont("Helvetica-Bold", 16)
-        p.drawString(40, y, f"Entity Report: {overview['entity_name']}")
-        y -= 25
+        elements.append(Paragraph(f"Reporting – Entité : {overview['entity_name']}", title_style))
+        elements.append(Spacer(1, 12))
 
-        # General metrics
-        p.setFont("Helvetica", 12)
-        for key in [
-            'num_departments', 'total_collaborators',
-            'total_submissions_day', 'total_submissions_week', 'total_submissions_month',
-            'participation_percentage_day', 'participation_percentage_week', 'participation_percentage_month',
-            'general_humor_day', 'general_humor_week', 'general_humor_month'
-        ]:
-            p.drawString(40, y, f"{key.replace('_', ' ').capitalize()}: {overview.get(key, '')}")
-            y -= 18
+        # General Stats Table
+        general_data = [
+            ['Nombre de départements', overview['num_departments']],
+            ['Total collaborateurs', overview['total_collaborators']],
+            ['Soumissions (Jour/Semaine/Mois)',
+             f"{overview['total_submissions_day']} / {overview['total_submissions_week']} / {overview['total_submissions_month']}"],
+            ['Participation (%) (J/S/M)',
+             f"{overview['participation_percentage_day']} / {overview['participation_percentage_week']} / {overview['participation_percentage_month']}"],
+            ['Humeur générale (J/S/M)',
+             f"{overview['general_humor_day']} / {overview['general_humor_week']} / {overview['general_humor_month']}"],
+        ]
+        table = Table(general_data, colWidths=[7 * cm, 8 * cm])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#002b49")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#f2f2f2")),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 18))
 
-        # Departments Header
-        y -= 10
-        p.setFont("Helvetica-Bold", 14)
-        p.drawString(40, y, "Departments:")
-        y -= 23
-        p.setFont("Helvetica", 11)
-
+        # Department details
+        elements.append(Paragraph("Détails des départements :", header_style))
         for department in overview['departments']:
-            if y < 80:
-                p.showPage()
-                y = height - 40
-            p.setFont("Helvetica-Bold", 12)
-            p.drawString(48, y, f"Department Name: {department['department_name']}")
-            y -= 15
-            p.setFont("Helvetica", 11)
-            p.drawString(60, y, f"Director: {department.get('department_director_name', '')}")
-            y -= 15
-            p.drawString(60, y, f"Services: {', '.join(department['service_names'])}")
-            y -= 15
-            p.drawString(60, y, f"Total Collaborators: {department['total_collaborators']}")
-            y -= 15
-            p.drawString(60, y,
-                         f"Total Submissions (Day/Week/Month): {department['total_submissions_day']}/{department['total_submissions_week']}/{department['total_submissions_month']}")
-            y -= 15
-            p.drawString(60, y,
-                         f"Participation % (Day/Week/Month): {department['participation_percentage_day']} / {department['participation_percentage_week']} / {department['participation_percentage_month']}")
-            y -= 15
-            p.drawString(60, y,
-                         f"General Humor (Day/Week/Month): {department['general_humor_day']} / {department['general_humor_week']} / {department['general_humor_month']}")
-            y -= 15
-            p.drawString(60, y, f"Services to supervise: {', '.join(department['service_to_supervise'])}")
-            y -= 20
+            data = [
+                ['Nom du département', department['department_name']],
+                ['Directeur', department['department_director_name'] or 'Non assigné'],
+                ['Services', ', '.join(department['service_names'])],
+                ['Total collaborateurs', department['total_collaborators']],
+                ['Soumissions (J/S/M)',
+                 f"{department['total_submissions_day']} / {department['total_submissions_week']} / {department['total_submissions_month']}"],
+                ['Participation % (J/S/M)',
+                 f"{department['participation_percentage_day']} / {department['participation_percentage_week']} / {department['participation_percentage_month']}"],
+                ['Humeur générale (J/S/M)',
+                 f"{department['general_humor_day']} / {department['general_humor_week']} / {department['general_humor_month']}"],
+                ['À superviser', ', '.join(department['service_to_supervise']) or '—']
+            ]
+            department_table = Table(data) # , colWidths=[6.5 * cm, 8.5 * cm]
+            department_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#dce3ea")),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+                ('GRID', (0, 0), (-1, -1), 0.3, colors.grey),
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ]))
+            elements.append(department_table)
+            elements.append(Spacer(1, 12))
 
-            # List services details
+            # Service details
+            elements.append(Paragraph("Services :", bold_style))
             for service in department['services']:
-                if y < 80:
-                    p.showPage()
-                    y = height - 40
-                p.setFont("Helvetica-Oblique", 11)
-                p.drawString(75, y, f"Service Name: {service['service_name']}")
-                y -= 15
-                p.drawString(85, y, f"Manager: {service.get('manager_name', '')}")
-                y -= 15
-                p.drawString(85, y, f"Employees: {', '.join(service['employees_names'])}")
-                y -= 15
-                p.drawString(85, y, f"Total Collaborators: {service['total_collaborators']}")
-                y -= 15
-                p.drawString(85, y,
-                             f"Total Submissions (Day/Week/Month): {service['total_submissions_day']}/{service['total_submissions_week']}/{service['total_submissions_month']}")
-                y -= 15
-                p.drawString(85, y,
-                             f"Participation % (Day/Week/Month): {service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}")
-                y -= 15
-                p.drawString(85, y,
-                             f"General Humor (Day/Week/Month): {service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}")
-                y -= 15
-                p.drawString(85, y, f"Collaborators to supervise: {', '.join(service['collaborators_to_supervise'])}")
-                y -= 20
+                service_data = [
+                    ['Nom du service', service['service_name']],
+                    ['Manager', service['manager_name'] or 'Non assigné'],
+                    ['Collaborateurs', ', '.join(service['employees_names'])],
+                    ['Total collaborateurs', service['total_collaborators']],
+                    ['Soumissions (J/S/M)',
+                     f"{service['total_submissions_day']} / {service['total_submissions_week']} / {service['total_submissions_month']}"],
+                    ['Participation % (J/S/M)',
+                     f"{service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}"],
+                    ['Humeur générale (J/S/M)',
+                     f"{service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}"],
+                    ['Collaborateurs à superviser', ', '.join(service['collaborators_to_supervise']) or '—']
+                ]
+                service_table = Table(service_data, colWidths=[6.5 * cm, 8.5 * cm])
+                service_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f0f4f8")),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+                    ('GRID', (0, 0), (-1, -1), 0.2, colors.lightgrey),
+                    ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ]))
+                elements.append(service_table)
+                elements.append(Spacer(1, 8))
 
         # Footer: departments to supervise
-        if y < 80:
-            p.showPage()
-            y = height - 40
-        p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, y,
-                        f"Departments to supervise: {', '.join(overview.get('department_to_supervise', []))}")
+        elements.append(Paragraph("Départements à superviser :", header_style))
+        department_list = ', '.join(overview['department_to_supervise']) or 'Aucun'
+        elements.append(Paragraph(department_list, normal_style))
 
-        p.save()
+        doc.build(elements)
         return response
 
 
@@ -1267,120 +1300,132 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
         response = HttpResponse(content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="cluster_report.pdf"'
 
-        p = canvas.Canvas(response, pagesize=A4)
-        width, height = A4
-        y = height - 40
+        doc = SimpleDocTemplate(response, pagesize=A4, topMargin=2 * cm, bottomMargin=2 * cm)
+        styles = getSampleStyleSheet()
+        elements = []
+
+        # Custom styles
+        title_style = ParagraphStyle(name='Title', fontSize=18, textColor=colors.HexColor("#002b49"), spaceAfter=12)
+        header_style = ParagraphStyle(name='Header', fontSize=14, textColor=colors.black, spaceBefore=12, spaceAfter=6)
+        normal_style = ParagraphStyle(name='Normal', fontSize=10, textColor=colors.black)
+        bold_style = ParagraphStyle(name='Bold', fontSize=10, textColor=colors.black, spaceAfter=6, leading=14)
 
         # Title
-        p.setFont("Helvetica-Bold", 16)
-        p.drawString(40, y, f"Cluster Report: {overview['cluster_name']}")
-        y -= 25
+        elements.append(Paragraph(f"Reporting – Pôle : {overview['cluster_name']}", title_style))
+        elements.append(Spacer(1, 12))
 
-        # General metrics
-        p.setFont("Helvetica", 12)
-        for key in [
-            'num_entities', 'total_collaborators',
-            'total_submissions_day', 'total_submissions_week', 'total_submissions_month',
-            'participation_percentage_day', 'participation_percentage_week', 'participation_percentage_month',
-            'general_humor_day', 'general_humor_week', 'general_humor_month'
-        ]:
-            p.drawString(40, y, f"{key.replace('_', ' ').capitalize()}: {overview.get(key, '')}")
-            y -= 18
+        # General Stats Table
+        general_data = [
+            ['Nombre d’entités', overview['num_entities']],
+            ['Total collaborateurs', overview['total_collaborators']],
+            ['Soumissions (Jour/Semaine/Mois)',
+             f"{overview['total_submissions_day']} / {overview['total_submissions_week']} / {overview['total_submissions_month']}"],
+            ['Participation (%) (J/S/M)',
+             f"{overview['participation_percentage_day']} / {overview['participation_percentage_week']} / {overview['participation_percentage_month']}"],
+            ['Humeur générale (J/S/M)',
+             f"{overview['general_humor_day']} / {overview['general_humor_week']} / {overview['general_humor_month']}"],
+        ]
+        table = Table(general_data, colWidths=[7 * cm, 8 * cm])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#002b49")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#f2f2f2")),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 18))
 
-        # Entities Header
-        y -= 10
-        p.setFont("Helvetica-Bold", 14)
-        p.drawString(40, y, "Entities:")
-        y -= 23
-        p.setFont("Helvetica", 11)
-
+        # Entity details
+        elements.append(Paragraph("Détails des entités :", header_style))
         for entity in overview['entities']:
-            if y < 80:
-                p.showPage()
-                y = height - 40
-            p.setFont("Helvetica-Bold", 12)
-            p.drawString(48, y, f"Entity Name: {entity['entity_name']}")
-            y -= 15
-            p.setFont("Helvetica", 11)
-            p.drawString(60, y, f"Director: {entity.get('entity_director_name', '')}")
-            y -= 15
-            p.drawString(60, y, f"Departments: {', '.join(entity['department_names'])}")
-            y -= 15
-            p.drawString(60, y, f"Total Collaborators: {entity['total_collaborators']}")
-            y -= 15
-            p.drawString(60, y,
-                         f"Total Submissions (Day/Week/Month): {entity['total_submissions_day']}/{entity['total_submissions_week']}/{entity['total_submissions_month']}")
-            y -= 15
-            p.drawString(60, y,
-                         f"Participation % (Day/Week/Month): {entity['participation_percentage_day']} / {entity['participation_percentage_week']} / {entity['participation_percentage_month']}")
-            y -= 15
-            p.drawString(60, y,
-                         f"General Humor (Day/Week/Month): {entity['general_humor_day']} / {entity['general_humor_week']} / {entity['general_humor_month']}")
-            y -= 15
-            p.drawString(60, y, f"Departments to supervise: {', '.join(entity['department_to_supervise'])}")
-            y -= 20
+            data = [
+                ['Nom de l’entité', entity['entity_name']],
+                ['Directeur', entity['entity_director_name'] or 'Non assigné'],
+                ['Départements', ', '.join(entity['department_names'])],
+                ['Total collaborateurs', entity['total_collaborators']],
+                ['Soumissions (J/S/M)',
+                 f"{entity['total_submissions_day']} / {entity['total_submissions_week']} / {entity['total_submissions_month']}"],
+                ['Participation % (J/S/M)',
+                 f"{entity['participation_percentage_day']} / {entity['participation_percentage_week']} / {entity['participation_percentage_month']}"],
+                ['Humeur générale (J/S/M)',
+                 f"{entity['general_humor_day']} / {entity['general_humor_week']} / {entity['general_humor_month']}"],
+                ['À superviser', ', '.join(entity['department_to_supervise']) or '—']
+            ]
+            entity_table = Table(data, colWidths=[6.5 * cm, 8.5 * cm])
+            entity_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#dce3ea")),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+                ('GRID', (0, 0), (-1, -1), 0.3, colors.grey),
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ]))
+            elements.append(entity_table)
+            elements.append(Spacer(1, 12))
 
-            # List department details
+            # Department details
+            elements.append(Paragraph("Départements :", bold_style))
             for department in entity['departments']:
-                if y < 80:
-                    p.showPage()
-                    y = height - 40
-                p.setFont("Helvetica-Bold", 11)
-                p.drawString(75, y, f"Department Name: {department['department_name']}")
-                y -= 15
-                p.setFont("Helvetica", 11)
-                p.drawString(85, y, f"Director: {department.get('department_director_name', '')}")
-                y -= 15
-                p.drawString(85, y, f"Services: {', '.join(department['service_names'])}")
-                y -= 15
-                p.drawString(85, y, f"Total Collaborators: {department['total_collaborators']}")
-                y -= 15
-                p.drawString(85, y,
-                             f"Total Submissions (Day/Week/Month): {department['total_submissions_day']}/{department['total_submissions_week']}/{department['total_submissions_month']}")
-                y -= 15
-                p.drawString(85, y,
-                             f"Participation % (Day/Week/Month): {department['participation_percentage_day']} / {department['participation_percentage_week']} / {department['participation_percentage_month']}")
-                y -= 15
-                p.drawString(85, y,
-                             f"General Humor (Day/Week/Month): {department['general_humor_day']} / {department['general_humor_week']} / {department['general_humor_month']}")
-                y -= 15
-                p.drawString(85, y, f"Services to supervise: {', '.join(department['service_to_supervise'])}")
-                y -= 20
+                dept_data = [
+                    ['Nom du département', department['department_name']],
+                    ['Directeur', department['department_director_name'] or 'Non assigné'],
+                    ['Services', ', '.join(department['service_names'])],
+                    ['Total collaborateurs', department['total_collaborators']],
+                    ['Soumissions (J/S/M)',
+                     f"{department['total_submissions_day']} / {department['total_submissions_week']} / {department['total_submissions_month']}"],
+                    ['Participation % (J/S/M)',
+                     f"{department['participation_percentage_day']} / {department['participation_percentage_week']} / {department['participation_percentage_month']}"],
+                    ['Humeur générale (J/S/M)',
+                     f"{department['general_humor_day']} / {department['general_humor_week']} / {department['general_humor_month']}"],
+                    ['À superviser', ', '.join(department['service_to_supervise']) or '—']
+                ]
+                dept_table = Table(dept_data, colWidths=[6.5 * cm, 8.5 * cm])
+                dept_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f0f4f8")),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+                    ('GRID', (0, 0), (-1, -1), 0.2, colors.lightgrey),
+                    ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ]))
+                elements.append(dept_table)
+                elements.append(Spacer(1, 10))
 
-                # List service details
+                # Service details
+                elements.append(Paragraph("Services :", normal_style))
                 for service in department['services']:
-                    if y < 80:
-                        p.showPage()
-                        y = height - 40
-                    p.setFont("Helvetica-Oblique", 11)
-                    p.drawString(100, y, f"Service Name: {service['service_name']}")
-                    y -= 15
-                    p.drawString(110, y, f"Manager: {service.get('manager_name', '')}")
-                    y -= 15
-                    p.drawString(110, y, f"Employees: {', '.join(service['employees_names'])}")
-                    y -= 15
-                    p.drawString(110, y, f"Total Collaborators: {service['total_collaborators']}")
-                    y -= 15
-                    p.drawString(110, y,
-                                 f"Total Submissions (Day/Week/Month): {service['total_submissions_day']}/{service['total_submissions_week']}/{service['total_submissions_month']}")
-                    y -= 15
-                    p.drawString(110, y,
-                                 f"Participation % (Day/Week/Month): {service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}")
-                    y -= 15
-                    p.drawString(110, y,
-                                 f"General Humor (Day/Week/Month): {service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}")
-                    y -= 15
-                    p.drawString(110, y,
-                                 f"Collaborators to supervise: {', '.join(service['collaborators_to_supervise'])}")
-                    y -= 20
+                    service_data = [
+                        ['Nom du service', service['service_name']],
+                        ['Manager', service['manager_name'] or 'Non assigné'],
+                        ['Collaborateurs', ', '.join(service['employees_names'])],
+                        ['Total collaborateurs', service['total_collaborators']],
+                        ['Soumissions (J/S/M)',
+                         f"{service['total_submissions_day']} / {service['total_submissions_week']} / {service['total_submissions_month']}"],
+                        ['Participation % (J/S/M)',
+                         f"{service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}"],
+                        ['Humeur générale (J/S/M)',
+                         f"{service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}"],
+                        ['Collaborateurs à superviser', ', '.join(service['collaborators_to_supervise']) or '—']
+                    ]
+                    service_table = Table(service_data, colWidths=[6.5 * cm, 8.5 * cm])
+                    service_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f7f9fb")),
+                        ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+                        ('GRID', (0, 0), (-1, -1), 0.2, colors.lightgrey),
+                        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                        ('FONTSIZE', (0, 0), (-1, -1), 9),
+                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ]))
+                    elements.append(service_table)
+                    elements.append(Spacer(1, 8))
 
         # Footer: entities to supervise
-        if y < 80:
-            p.showPage()
-            y = height - 40
-        p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, y,
-                        f"Entities to supervise: {', '.join(overview.get('entity_to_supervise', []))}")
+        elements.append(Paragraph("Entités à superviser :", header_style))
+        entity_list = ', '.join(overview['entity_to_supervise']) or 'Aucune'
+        elements.append(Paragraph(entity_list, normal_style))
 
-        p.save()
+        doc.build(elements)
         return response
