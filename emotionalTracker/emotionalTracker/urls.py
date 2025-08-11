@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-from .views import EmotionViewSet, EmotionOverviewSet, AuthViewSet, ManagerOverViewSet, DepartmentDirectorOverviewSet, EntityDirectorOverviewSet, PoleDirectorOverviewSet
+from .views import EmotionViewSet, EmotionOverviewSet, AuthViewSet, ManagerOverViewSet, DepartmentDirectorOverviewSet, EntityDirectorOverviewSet, PoleDirectorOverviewSet, DrhOverviewSet
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -28,6 +28,7 @@ router.register(r'manager', ManagerOverViewSet, basename='manager-overview')
 router.register(r'department', DepartmentDirectorOverviewSet, basename='department-overview')
 router.register(r'entity', EntityDirectorOverviewSet, basename='entity-overview')
 router.register(r'cluster', PoleDirectorOverviewSet, basename='cluster-overview')
+router.register(r'drh', DrhOverviewSet, basename='drh-overview')
 router.register(r'auth', AuthViewSet, basename='auth')
 
 urlpatterns = [

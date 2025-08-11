@@ -18,15 +18,32 @@ from reportlab.lib.units import cm
 
 from django.contrib.auth import logout
 from django.utils import timezone
-from django.db.models import Q
+from django.db.models import Q, Avg
 
-from .models import Emotion, EmotionType, Collaborator
+from .models import Emotion, EmotionType, Collaborator, get_emotion_label_from_degree, Cluster
 from .serializers import EmotionSerializer, CollaboratorCreateSerializer, CollaboratorDetailSerializer, EmotionTypeSerializer
 
 today = timezone.localdate()
 week_number = today.isocalendar()[1]
 year = today.year
 month = today.month
+
+
+def get_emotion_label(degree):
+    if degree <= -5:
+        return "angry"
+    elif degree <= -2:
+        return "anxious"
+    elif degree <= -1:
+        return "sad"
+    elif degree == 0:
+        return "neutral"
+    elif 0 < degree < 5:
+        return "happy"
+    elif degree >= 5:
+        return "excited"
+    return "neutral"
+
 
 def general_humor(degree):
     if degree > 0:
@@ -406,33 +423,20 @@ class ManagerOverViewSet(viewsets.ViewSet):
         week_days = [today + timedelta(days=i-today.weekday()) for i in range(5)]
         week_working_days = sum(1 for d in week_days if d.month == today.month)
         week_possible = total_subordinates * week_working_days * 2
+        total_unsubmit_week = week_possible - total_submissions_week # collaborateurs n'ayant pas submit
         percent_week = min(1.0, total_submissions_week / week_possible if week_possible > 0 else 0) * 100
 
         # Month: working days in month
         _, last_day = monthrange(year, month)
         month_working_days = sum(1 for i in range(1, last_day+1) if weekday(year, month, i) < 5)
         month_possible = total_subordinates * month_working_days * 2
+        total_unsubmit_month = month_possible - total_submissions_month
         percent_month = min(1.0, total_submissions_month / month_possible if month_possible > 0 else 0) * 100
 
         # Emotion degree for all subordinates
         degree_day = sum([e.emotion_degree for e in get_emotions_for_period(subordinates, 'day')])
         degree_week = sum([e.emotion_degree for e in get_emotions_for_period(subordinates, 'week')])
         degree_month = sum([e.emotion_degree for e in get_emotions_for_period(subordinates, 'month')])
-
-        def get_emotion_label(degree):
-            if degree <= -5:
-                return "angry"
-            elif degree <= -2:
-                return "anxious"
-            elif degree <= -1:
-                return "sad"
-            elif degree == 0:
-                return "neutral"
-            elif 0 < degree < 5:
-                return "happy"
-            elif degree >= 5:
-                return "excited"
-            return "neutral"
 
         emotion_today = get_emotion_label(degree_day)
         emotion_this_week = get_emotion_label(degree_week)
@@ -505,6 +509,8 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
 
         # Aggrecated metrics
         total_collaborators = 0
+        total_participation_week_possible = 0
+        total_participation_month_possible = 0
         total_submissions_day = 0
         total_submissions_week = 0
         total_submissions_month = 0
@@ -514,6 +520,11 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
         total_general_humor_day = 0
         total_general_humor_week = 0
         total_general_humor_month = 0
+
+        total_emotion_degree_day_department = 0
+        total_emotion_degree_week_department = 0
+        total_emotion_degree_month_department = 0
+
         service_to_supervise = []
 
         services_data = []
@@ -547,17 +558,27 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
             week_days = [today + timedelta(days=i - today.weekday()) for i in range(5)]
             week_working_days = sum(1 for d in week_days if d.month == today.month)
             week_possible = collaborators.count() * week_working_days * 2
+            total_unsubmit_week = week_possible - submissions_week  # collaborateurs n'ayant pas submit
             percent_week = min(1.0, submissions_week / week_possible if week_possible > 0 else 0) * 100
             # Month: working days
             _, last_day = monthrange(year, month)
             month_working_days = sum(1 for i in range(1, last_day + 1) if weekday(year, month, i) < 5)
             month_possible = collaborators.count() * month_working_days * 2
+            total_unsubmit_month = month_possible - submissions_month
             percent_month = min(1.0, submissions_month / month_possible if month_possible > 0 else 0) * 100
+
+            # Total of participation in the department
+            total_participation_week_possible += week_possible
+            total_participation_month_possible += month_possible
 
             # Emotion degree
             degree_day = sum([e.emotion_degree for e in get_emotions_for_period(collaborators, 'day')])
             degree_week = sum([e.emotion_degree for e in get_emotions_for_period(collaborators, 'week')])
             degree_month = sum([e.emotion_degree for e in get_emotions_for_period(collaborators, 'month')])
+
+            emotion_day_service = get_emotion_label(degree_day)
+            emotion_week_service = get_emotion_label(degree_week)
+            emotion_month_service = get_emotion_label(degree_month)
 
             humor_day = general_humor(degree_day)
             humor_week = general_humor(degree_week)
@@ -571,6 +592,11 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
             total_participation_week += percent_week
             total_participation_month += percent_month
 
+            # getting emotion (D, W, M) for the departments
+            total_emotion_degree_day_department += degree_day
+            total_emotion_degree_week_department += degree_week
+            total_emotion_degree_month_department += degree_month
+
             # For general_humor, count negative (for service_to_supervise)
             if humor_day == "negative" or humor_week == "negative" or humor_month == "negative":
                 service_to_supervise.append(service.name)
@@ -581,12 +607,21 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
                 'manager_name': f"{manager.first_name} {manager.last_name}" if manager else None,
                 'employees_names': [f"{emp.first_name} {emp.last_name}" for emp in employees],
                 'total_collaborators': collaborators.count(),
+                'total_submissions_week_possible': week_possible,
+                'total_submissions_month_possible': month_possible,
                 'total_submissions_day': submissions_day,
                 'total_submissions_week': submissions_week,
                 'total_submissions_month': submissions_month,
+                'unsubmitted_week_collaborators': total_unsubmit_week,
+                'unsubmitted_month_collaborators': total_unsubmit_month,
+                'percent_submission_week': round(submissions_week / week_possible if week_possible else 0, 2),
+                'percent_submission_month': round(submissions_month / month_possible if month_possible else 0, 2),
                 'participation_percentage_day': round(percent_day, 2),
                 'participation_percentage_week': round(percent_week, 2),
                 'participation_percentage_month': round(percent_month, 2),
+                'emotion_day_service': emotion_day_service,
+                'emotion_week_service': emotion_week_service,
+                'emotion_month_service': emotion_month_service,
                 'general_humor_day': humor_day,
                 'general_humor_week': humor_week,
                 'general_humor_month': humor_month,
@@ -608,15 +643,26 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
             'service_names': service_names,
             'services': services_data,
             'total_collaborators': total_collaborators,
+            'total_participation_week_possible': total_participation_week_possible,
+            'total_participation_month_possible': total_participation_month_possible,
             'total_submissions_day': total_submissions_day,
             'total_submissions_week': total_submissions_week,
+            'unsubmitted_collaborators_week': total_participation_week_possible - total_submissions_week,
+            'unsubmitted_collaborators_month': total_participation_month_possible - total_submissions_month,
             'total_submissions_month': total_submissions_month,
+            'percent_submission_week': round(total_submissions_week / total_participation_week_possible if total_participation_week_possible else 0, 2),
+            'percent_submission_month': round(total_submissions_month / total_participation_month_possible if total_participation_month_possible else 0, 2),
             'participation_percentage_day': round(total_participation_day / num_services if num_services else 0, 2),
             'participation_percentage_week': round(total_participation_week / num_services if num_services else 0, 2),
             'participation_percentage_month': round(total_participation_month / num_services if num_services else 0, 2),
             'general_humor_day': aggregate_general_humor(services_data, 'day'),
             'general_humor_week': aggregate_general_humor(services_data, 'week'),
             'general_humor_month': aggregate_general_humor(services_data, 'month'),
+
+            'emotion_today': get_emotion_label(total_emotion_degree_day_department),
+            'emotion_week': get_emotion_label(total_emotion_degree_week_department),
+            'emotion_month': get_emotion_label(total_emotion_degree_month_department),
+
             'service_to_supervise': service_to_supervise,
         })
 
@@ -656,13 +702,14 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
         # General Stats Table
         general_data = [
             ['Nombre de services', overview['num_services']],
-            ['Total collaborateurs', overview['total_collaborators']],
-            ['Soumissions (Jour/Semaine/Mois)',
-             f"{overview['total_submissions_day']} / {overview['total_submissions_week']} / {overview['total_submissions_month']}"],
-            ['Participation (%) (J/S/M)',
-             f"{overview['participation_percentage_day']} / {overview['participation_percentage_week']} / {overview['participation_percentage_month']}"],
-            ['Humeur générale (J/S/M)',
-             f"{overview['general_humor_day']} / {overview['general_humor_week']} / {overview['general_humor_month']}"],
+            ['Total collaborateurs globale', overview['total_collaborators']],
+            ['Total de soumissions possible globale', f"{overview['total_participation_month_possible']}"],
+            ['Soumissions achevés globale',
+             f"{overview['total_submissions_month']}"],
+            ['Sousmissions inachevés globale', f"{overview['unsubmitted_collaborators_month']}"],
+            ['Taux de participation (%)',
+             f"{overview['percent_submission_month']}"],
+            ['Tendance Emotionnelle globale', f"{overview['emotion_month']}"]
         ]
         table = Table(general_data, colWidths=[7 * cm, 8 * cm])
         table.setStyle(TableStyle([
@@ -685,12 +732,13 @@ class DepartmentDirectorOverviewSet(viewsets.ViewSet):
                 ['Manager', service['manager_name'] or 'Non assigné'],
                 ['Collaborateurs', ', '.join(service['employees_names'])],
                 ['Total collaborateurs', service['total_collaborators']],
-                ['Soumissions (J/S/M)',
-                 f"{service['total_submissions_day']} / {service['total_submissions_week']} / {service['total_submissions_month']}"],
+                ['Total de soumissions possible', service['total_submissions_month_possible']],
+                ['Soumissions achevés',
+                 f"{service['total_submissions_month']}"],
+                ['Soumissions inachevés', service['unsubmitted_month_collaborators']],
                 ['Participation % (J/S/M)',
-                 f"{service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}"],
-                ['Humeur générale (J/S/M)',
-                 f"{service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}"],
+                 f"{service['percent_submission_month']}"],
+                ['Tendance Emotionnelle', service['emotion_month_service']],
                 ['À superviser', ', '.join(service['collaborators_to_supervise']) or '—']
             ]
             service_table = Table(data, colWidths=[6.5 * cm, 8.5 * cm])
@@ -745,7 +793,13 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
         total_participation_day = 0
         total_participation_week = 0
         total_participation_month = 0
+        total_participation_week_possible = 0
+        total_participation_month_possible = 0
         department_to_supervise = []  # Departments where any service_to_supervise exists
+
+        total_emotion_degree_day_entity = 0
+        total_emotion_degree_week_entity = 0
+        total_emotion_degree_month_entity = 0
 
         departments_data = []
 
@@ -766,6 +820,12 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
             department_participation_day = 0
             department_participation_week = 0
             department_participation_month = 0
+            total_participation_week_possible_department = 0
+            total_participation_month_possible_department = 0
+
+            total_emotion_degree_day_department = 0
+            total_emotion_degree_week_department = 0
+            total_emotion_degree_month_department = 0
 
             services_data = []
 
@@ -800,10 +860,17 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
                 month_possible = len(service_collaborators) * month_working_days * 2
                 percent_month = min(1.0, submissions_month / month_possible if month_possible > 0 else 0) * 100
 
+                total_participation_week_possible_department += week_possible
+                total_participation_month_possible_department += month_possible
+
                 # Emotion degree
                 degree_day = sum([e.emotion_degree for e in get_emotions_for_period(service_collaborators, 'day')])
                 degree_week = sum([e.emotion_degree for e in get_emotions_for_period(service_collaborators, 'week')])
                 degree_month = sum([e.emotion_degree for e in get_emotions_for_period(service_collaborators, 'month')])
+
+                total_emotion_degree_day_department += degree_day
+                total_emotion_degree_week_department += degree_week
+                total_emotion_degree_month_department += degree_month
 
                 humor_day = general_humor(degree_day)
                 humor_week = general_humor(degree_week)
@@ -855,9 +922,15 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
                 'service_names': service_names,
                 'services': services_data,
                 'total_collaborators': department_total_collaborators,
+                'total_participation_week_possible_department': total_participation_week_possible_department,
+                'total_participation_month_possible_department': total_participation_month_possible_department,
                 'total_submissions_day': department_submissions_day,
                 'total_submissions_week': department_submissions_week,
                 'total_submissions_month': department_submissions_month,
+                'unsubmitted_collaborators_week_department': total_participation_week_possible_department - department_submissions_week,
+                'unsubmitted_collaborators_month_department': total_participation_month_possible_department - department_submissions_month,
+                'percent_submission_week_department': round(department_submissions_week / total_participation_week_possible_department if total_participation_week_possible_department else 0, 2),
+                'percent_submission_month_department': round(department_submissions_month / total_participation_month_possible_department if total_participation_month_possible_department else 0, 2),
                 'participation_percentage_day': round(
                     department_participation_day / len(services) if len(services) else 0, 2),
                 'participation_percentage_week': round(
@@ -867,6 +940,11 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
                 'general_humor_day': aggregate_general_humor(services_data, 'day'),
                 'general_humor_week': aggregate_general_humor(services_data, 'week'),
                 'general_humor_month': aggregate_general_humor(services_data, 'month'),
+
+                'emotion_today_department': get_emotion_label(total_emotion_degree_day_department),
+                'emotion_week_department': get_emotion_label(total_emotion_degree_week_department),
+                'emotion_month_department': get_emotion_label(total_emotion_degree_month_department),
+
                 'service_to_supervise': service_to_supervise,
             })
 
@@ -874,9 +952,16 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
             total_submissions_day += department_submissions_day
             total_submissions_week += department_submissions_week
             total_submissions_month += department_submissions_month
+            total_participation_week_possible += total_participation_week_possible_department
+            total_participation_month_possible += total_participation_month_possible_department
             total_participation_day += department_participation_day / len(services) if len(services) else 0
             total_participation_week += department_participation_week / len(services) if len(services) else 0
             total_participation_month += department_participation_month / len(services) if len(services) else 0
+
+            total_emotion_degree_day_entity += total_emotion_degree_day_department
+            total_emotion_degree_week_entity += total_emotion_degree_week_department
+            total_emotion_degree_month_entity += total_emotion_degree_month_department
+
             if service_to_supervise:
                 department_to_supervise.append(department.name)
 
@@ -894,9 +979,15 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
             'num_departments': num_departments,
             'departments': departments_data,
             'total_collaborators': total_collaborators,
+            'total_participation_week_possible': total_participation_week_possible,
+            'total_participation_month_possible': total_participation_month_possible,
             'total_submissions_day': total_submissions_day,
             'total_submissions_week': total_submissions_week,
             'total_submissions_month': total_submissions_month,
+            'unsubmitted_collaborators_week': total_participation_week_possible - total_submissions_week,
+            'unsubmitted_collaborators_month': total_participation_month_possible - total_submissions_month,
+            'percent_submission_week': round(total_submissions_week / total_participation_week_possible if total_participation_week_possible else 0, 2),
+            'percent_submission_month': round(total_submissions_month / total_participation_month_possible if total_participation_month_possible else 0, 2),
             'participation_percentage_day': round(total_participation_day / num_departments if num_departments else 0,
                                                   2),
             'participation_percentage_week': round(total_participation_week / num_departments if num_departments else 0,
@@ -906,6 +997,11 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
             'general_humor_day': aggregate_general_humor(departments_data, 'day'),
             'general_humor_week': aggregate_general_humor(departments_data, 'week'),
             'general_humor_month': aggregate_general_humor(departments_data, 'month'),
+
+            'emotion_today': get_emotion_label(total_emotion_degree_day_entity),
+            'emotion_week': get_emotion_label(total_emotion_degree_week_entity),
+            'emotion_month': get_emotion_label(total_emotion_degree_month_entity),
+
             'department_to_supervise': department_to_supervise,
         })
 
@@ -946,12 +1042,13 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
         general_data = [
             ['Nombre de départements', overview['num_departments']],
             ['Total collaborateurs', overview['total_collaborators']],
-            ['Soumissions (Jour/Semaine/Mois)',
-             f"{overview['total_submissions_day']} / {overview['total_submissions_week']} / {overview['total_submissions_month']}"],
-            ['Participation (%) (J/S/M)',
-             f"{overview['participation_percentage_day']} / {overview['participation_percentage_week']} / {overview['participation_percentage_month']}"],
-            ['Humeur générale (J/S/M)',
-             f"{overview['general_humor_day']} / {overview['general_humor_week']} / {overview['general_humor_month']}"],
+            ['Nombre de soumissions globale', overview['total_participation_month_possible']],
+            ['Nombre de soumissions achevés globale',
+             f"{overview['total_submissions_month']}"],
+            ['Nombre de soumissions inachevés globale', overview['unsubmitted_collaborators_month']],
+            ['Taux de participation globale (%)',
+             f"{overview['percent_submission_month']}"],
+            ['Tendance emotionnele globale', overview['emotion_month']],
         ]
         table = Table(general_data, colWidths=[7 * cm, 8 * cm])
         table.setStyle(TableStyle([
@@ -974,12 +1071,13 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
                 ['Directeur', department['department_director_name'] or 'Non assigné'],
                 ['Services', ', '.join(department['service_names'])],
                 ['Total collaborateurs', department['total_collaborators']],
-                ['Soumissions (J/S/M)',
-                 f"{department['total_submissions_day']} / {department['total_submissions_week']} / {department['total_submissions_month']}"],
-                ['Participation % (J/S/M)',
-                 f"{department['participation_percentage_day']} / {department['participation_percentage_week']} / {department['participation_percentage_month']}"],
-                ['Humeur générale (J/S/M)',
-                 f"{department['general_humor_day']} / {department['general_humor_week']} / {department['general_humor_month']}"],
+                ['Total de soumissions', department['total_participation_month_possible_department']],
+                ['Soumissions achevés',
+                 f"{department['total_submissions_month']}"],
+                ['Soumissions inachevés', department['unsubmitted_collaborators_month_department']],
+                ['Taux de Participation % (J/S/M)',
+                 f"{department['percent_submission_month_department']}"],
+                ['Tendance emotionnelle', department['emotion_month_department']],
                 ['À superviser', ', '.join(department['service_to_supervise']) or '—']
             ]
             department_table = Table(data) # , colWidths=[6.5 * cm, 8.5 * cm]
@@ -993,34 +1091,6 @@ class EntityDirectorOverviewSet(viewsets.ViewSet):
             ]))
             elements.append(department_table)
             elements.append(Spacer(1, 12))
-
-            # Service details
-            elements.append(Paragraph("Services :", bold_style))
-            for service in department['services']:
-                service_data = [
-                    ['Nom du service', service['service_name']],
-                    ['Manager', service['manager_name'] or 'Non assigné'],
-                    ['Collaborateurs', ', '.join(service['employees_names'])],
-                    ['Total collaborateurs', service['total_collaborators']],
-                    ['Soumissions (J/S/M)',
-                     f"{service['total_submissions_day']} / {service['total_submissions_week']} / {service['total_submissions_month']}"],
-                    ['Participation % (J/S/M)',
-                     f"{service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}"],
-                    ['Humeur générale (J/S/M)',
-                     f"{service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}"],
-                    ['Collaborateurs à superviser', ', '.join(service['collaborators_to_supervise']) or '—']
-                ]
-                service_table = Table(service_data, colWidths=[6.5 * cm, 8.5 * cm])
-                service_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f0f4f8")),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
-                    ('GRID', (0, 0), (-1, -1), 0.2, colors.lightgrey),
-                    ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 9),
-                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ]))
-                elements.append(service_table)
-                elements.append(Spacer(1, 8))
 
         # Footer: departments to supervise
         elements.append(Paragraph("Départements à superviser :", header_style))
@@ -1056,12 +1126,21 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
 
         # Aggregated metrics
         total_collaborators = 0
+
+        total_participation_week_possible = 0
+        total_participation_month_possible = 0
+
         total_submissions_day = 0
         total_submissions_week = 0
         total_submissions_month = 0
         total_participation_day = 0
         total_participation_week = 0
         total_participation_month = 0
+
+        total_emotion_degree_day_cluster = 0
+        total_emotion_degree_week_cluster = 0
+        total_emotion_degree_month_cluster = 0
+
         entity_to_supervise = []  # Entities where any department_to_supervise exists
 
         entities_data = []
@@ -1077,12 +1156,20 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
             entity_director_name = f"{entity_director.first_name} {entity_director.last_name}" if entity_director else None
 
             entity_total_collaborators = 0
+
+            total_participation_week_possible_entity = 0
+            total_participation_month_possible_entity = 0
+
             entity_submissions_day = 0
             entity_submissions_week = 0
             entity_submissions_month = 0
             entity_participation_day = 0
             entity_participation_week = 0
             entity_participation_month = 0
+
+            total_emotion_degree_day_entity = 0
+            total_emotion_degree_week_entity = 0
+            total_emotion_degree_month_entity = 0
 
             departments_data = []
 
@@ -1096,12 +1183,20 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                 dept_director_name = f"{dept_director.first_name} {dept_director.last_name}" if dept_director else None
 
                 department_total_collaborators = 0
+
+                total_participation_week_possible_department = 0
+                total_participation_month_possible_department = 0
+
                 department_submissions_day = 0
                 department_submissions_week = 0
                 department_submissions_month = 0
                 department_participation_day = 0
                 department_participation_week = 0
                 department_participation_month = 0
+
+                total_emotion_degree_day_department = 0
+                total_emotion_degree_week_department = 0
+                total_emotion_degree_month_department = 0
 
                 services_data = []
 
@@ -1136,6 +1231,9 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                     month_possible = len(service_collaborators) * month_working_days * 2
                     percent_month = min(1.0, submissions_month / month_possible if month_possible > 0 else 0) * 100
 
+                    total_participation_week_possible_department += week_possible
+                    total_participation_month_possible_department += month_possible
+
                     # Emotion degree
                     degree_day = sum([e.emotion_degree for e in get_emotions_for_period(service_collaborators, 'day')])
                     degree_week = sum(
@@ -1154,6 +1252,10 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                     department_participation_day += percent_day
                     department_participation_week += percent_week
                     department_participation_month += percent_month
+
+                    total_emotion_degree_day_department += degree_day
+                    total_emotion_degree_week_department += degree_week
+                    total_emotion_degree_month_department += degree_month
 
                     # For service_to_supervise
                     if humor_day == "negative" or humor_week == "negative" or humor_month == "negative":
@@ -1193,15 +1295,24 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                     'service_names': service_names,
                     'services': services_data,
                     'total_collaborators': department_total_collaborators,
+                    'total_participation_week_possible_department': total_participation_week_possible_department,
+                    'total_participation_month_possible_department': total_participation_month_possible_department,
                     'total_submissions_day': department_submissions_day,
                     'total_submissions_week': department_submissions_week,
                     'total_submissions_month': department_submissions_month,
+                    'unsubmitted_collaborators_week_department': total_participation_week_possible_department - department_submissions_week,
+                    'unsubmitted_collaborators_month_department': total_participation_month_possible_department - department_submissions_month,
+                    'percent_submission_week_department': round(department_submissions_week / total_participation_week_possible_department if total_participation_week_possible_department else 0, 2),
+                    'percent_submission_month_department': round(department_submissions_month / total_participation_month_possible_department if total_participation_month_possible_department else 0, 2),
                     'participation_percentage_day': round(
                         department_participation_day / len(services) if len(services) else 0, 2),
                     'participation_percentage_week': round(
                         department_participation_week / len(services) if len(services) else 0, 2),
                     'participation_percentage_month': round(
                         department_participation_month / len(services) if len(services) else 0, 2),
+                    'emotion_today_department': get_emotion_label(total_emotion_degree_day_department),
+                    'emotion_week_department': get_emotion_label(total_emotion_degree_week_department),
+                    'emotion_month_department': get_emotion_label(total_emotion_degree_month_department),
                     'general_humor_day': aggregate_general_humor(services_data, 'day'),
                     'general_humor_week': aggregate_general_humor(services_data, 'week'),
                     'general_humor_month': aggregate_general_humor(services_data, 'month'),
@@ -1209,12 +1320,21 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                 })
 
                 entity_total_collaborators += department_total_collaborators
+
+                total_participation_week_possible_entity += total_participation_week_possible_department
+                total_participation_month_possible_entity += total_participation_month_possible_department
+
                 entity_submissions_day += department_submissions_day
                 entity_submissions_week += department_submissions_week
                 entity_submissions_month += department_submissions_month
                 entity_participation_day += department_participation_day / len(services) if len(services) else 0
                 entity_participation_week += department_participation_week / len(services) if len(services) else 0
                 entity_participation_month += department_participation_month / len(services) if len(services) else 0
+
+                total_emotion_degree_day_entity += total_emotion_degree_day_department
+                total_emotion_degree_week_entity += total_emotion_degree_week_department
+                total_emotion_degree_month_entity += total_emotion_degree_month_department
+
                 if service_to_supervise:
                     department_to_supervise.append(department.name)
 
@@ -1231,9 +1351,15 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                 'department_names': department_names,
                 'departments': departments_data,
                 'total_collaborators': entity_total_collaborators,
+                'total_participation_week_possible_entity': total_participation_week_possible_entity,
+                'total_participation_month_possible_entity': total_participation_month_possible_entity,
                 'total_submissions_day': entity_submissions_day,
                 'total_submissions_week': entity_submissions_week,
                 'total_submissions_month': entity_submissions_month,
+                'unsubmitted_collaborators_week_entity': total_participation_week_possible_entity - entity_submissions_week,
+                'unsubmitted_collaborators_month_entity': total_participation_month_possible_entity - entity_submissions_month,
+                'percent_submission_week_entity': round(entity_submissions_week / total_participation_week_possible_entity if total_participation_week_possible_entity else 0, 2),
+                'percent_submission_month_entity': round(entity_submissions_month / total_participation_month_possible_entity if total_participation_month_possible_entity else 0, 2),
                 'participation_percentage_day': round(
                     entity_participation_day / len(departments) if len(departments) else 0, 2),
                 'participation_percentage_week': round(
@@ -1243,6 +1369,11 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                 'general_humor_day': aggregate_general_humor(departments_data, 'day'),
                 'general_humor_week': aggregate_general_humor(departments_data, 'week'),
                 'general_humor_month': aggregate_general_humor(departments_data, 'month'),
+
+                'emotion_today_entity': get_emotion_label(total_emotion_degree_day_entity),
+                'emotion_week_entity': get_emotion_label(total_emotion_degree_week_entity),
+                'emotion_month_entity': get_emotion_label(total_emotion_degree_month_entity),
+
                 'department_to_supervise': department_to_supervise,
             })
 
@@ -1253,6 +1384,14 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
             total_participation_day += entity_participation_day / len(departments) if len(departments) else 0
             total_participation_week += entity_participation_week / len(departments) if len(departments) else 0
             total_participation_month += entity_participation_month / len(departments) if len(departments) else 0
+
+            total_participation_week_possible += total_participation_week_possible_entity
+            total_participation_month_possible += total_participation_month_possible_entity
+
+            total_emotion_degree_day_cluster += total_emotion_degree_day_entity
+            total_emotion_degree_week_cluster += total_emotion_degree_week_entity
+            total_emotion_degree_month_cluster += total_emotion_degree_month_entity
+
             if department_to_supervise:
                 entity_to_supervise.append(entity.name)
 
@@ -1269,15 +1408,26 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
             'num_entities': num_entities,
             'entities': entities_data,
             'total_collaborators': total_collaborators,
+            'total_participation_week_possible': total_participation_week_possible,
+            'total_participation_month_possible': total_participation_month_possible,
             'total_submissions_day': total_submissions_day,
             'total_submissions_week': total_submissions_week,
             'total_submissions_month': total_submissions_month,
+            'unsubmitted_collaborators_week': total_participation_week_possible - total_submissions_week,
+            'unsubmitted_collaborators_month': total_participation_month_possible - total_submissions_month,
+            'percent_submission_week': round(total_submissions_week / total_participation_week_possible if total_participation_week_possible else 0, 2),
+            'percent_submission_month': round(total_submissions_month / total_participation_month_possible if total_participation_month_possible else 0, 2),
             'participation_percentage_day': round(total_participation_day / num_entities if num_entities else 0, 2),
             'participation_percentage_week': round(total_participation_week / num_entities if num_entities else 0, 2),
             'participation_percentage_month': round(total_participation_month / num_entities if num_entities else 0, 2),
             'general_humor_day': aggregate_general_humor(entities_data, 'day'),
             'general_humor_week': aggregate_general_humor(entities_data, 'week'),
             'general_humor_month': aggregate_general_humor(entities_data, 'month'),
+
+            'emotion_today': get_emotion_label(total_emotion_degree_day_cluster),
+            'emotion_week': get_emotion_label(total_emotion_degree_week_cluster),
+            'emotion_month': get_emotion_label(total_emotion_degree_month_cluster),
+
             'entity_to_supervise': entity_to_supervise,
 
         })
@@ -1318,12 +1468,13 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
         general_data = [
             ['Nombre d’entités', overview['num_entities']],
             ['Total collaborateurs', overview['total_collaborators']],
-            ['Soumissions (Jour/Semaine/Mois)',
-             f"{overview['total_submissions_day']} / {overview['total_submissions_week']} / {overview['total_submissions_month']}"],
-            ['Participation (%) (J/S/M)',
-             f"{overview['participation_percentage_day']} / {overview['participation_percentage_week']} / {overview['participation_percentage_month']}"],
-            ['Humeur générale (J/S/M)',
-             f"{overview['general_humor_day']} / {overview['general_humor_week']} / {overview['general_humor_month']}"],
+            ['Totale des soumissions possible', overview['total_participation_month_possible']],
+            ['Soumissions achevés',
+             f"{overview['total_submissions_month']}"],
+            ['Soumissions inachevés', overview['unsubmitted_collaborators_month']],
+            ['Participation (%)',
+             f"{overview['percent_submission_month']}"],
+            ['Tendance emotionnelle', overview['emotion_month']],
         ]
         table = Table(general_data, colWidths=[7 * cm, 8 * cm])
         table.setStyle(TableStyle([
@@ -1346,12 +1497,13 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                 ['Directeur', entity['entity_director_name'] or 'Non assigné'],
                 ['Départements', ', '.join(entity['department_names'])],
                 ['Total collaborateurs', entity['total_collaborators']],
-                ['Soumissions (J/S/M)',
-                 f"{entity['total_submissions_day']} / {entity['total_submissions_week']} / {entity['total_submissions_month']}"],
-                ['Participation % (J/S/M)',
-                 f"{entity['participation_percentage_day']} / {entity['participation_percentage_week']} / {entity['participation_percentage_month']}"],
-                ['Humeur générale (J/S/M)',
-                 f"{entity['general_humor_day']} / {entity['general_humor_week']} / {entity['general_humor_month']}"],
+                ['Total de soumissions possible', entity['total_participation_month_possible_entity']],
+                ['Soumissions achevés',
+                 f"{entity['total_submissions_month']}"],
+                ['Soumissions inachevés', entity['unsubmitted_collaborators_month_entity']],
+                ['Taux de participation %',
+                 f"{entity['percent_submission_month_entity']}"],
+                ['Tendance emotionnelle', entity['emotion_month_entity']],
                 ['À superviser', ', '.join(entity['department_to_supervise']) or '—']
             ]
             entity_table = Table(data, colWidths=[6.5 * cm, 8.5 * cm])
@@ -1374,12 +1526,13 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                     ['Directeur', department['department_director_name'] or 'Non assigné'],
                     ['Services', ', '.join(department['service_names'])],
                     ['Total collaborateurs', department['total_collaborators']],
-                    ['Soumissions (J/S/M)',
-                     f"{department['total_submissions_day']} / {department['total_submissions_week']} / {department['total_submissions_month']}"],
-                    ['Participation % (J/S/M)',
-                     f"{department['participation_percentage_day']} / {department['participation_percentage_week']} / {department['participation_percentage_month']}"],
-                    ['Humeur générale (J/S/M)',
-                     f"{department['general_humor_day']} / {department['general_humor_week']} / {department['general_humor_month']}"],
+                    ['Total de soumissions', department['total_participation_month_possible_department']],
+                    ['Soumissions achevés',
+                     f"{department['total_submissions_month']}"],
+                    ['Soumissions inachevés', department['unsubmitted_collaborators_month_department']],
+                    ['Taux de participation %',
+                     f"{department['percent_submission_month_department']}"],
+                    ['Tendance emotionnelle', department['emotion_month_department']],
                     ['À superviser', ', '.join(department['service_to_supervise']) or '—']
                 ]
                 dept_table = Table(dept_data, colWidths=[6.5 * cm, 8.5 * cm])
@@ -1394,34 +1547,6 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
                 elements.append(dept_table)
                 elements.append(Spacer(1, 10))
 
-                # Service details
-                elements.append(Paragraph("Services :", normal_style))
-                for service in department['services']:
-                    service_data = [
-                        ['Nom du service', service['service_name']],
-                        ['Manager', service['manager_name'] or 'Non assigné'],
-                        ['Collaborateurs', ', '.join(service['employees_names'])],
-                        ['Total collaborateurs', service['total_collaborators']],
-                        ['Soumissions (J/S/M)',
-                         f"{service['total_submissions_day']} / {service['total_submissions_week']} / {service['total_submissions_month']}"],
-                        ['Participation % (J/S/M)',
-                         f"{service['participation_percentage_day']} / {service['participation_percentage_week']} / {service['participation_percentage_month']}"],
-                        ['Humeur générale (J/S/M)',
-                         f"{service['general_humor_day']} / {service['general_humor_week']} / {service['general_humor_month']}"],
-                        ['Collaborateurs à superviser', ', '.join(service['collaborators_to_supervise']) or '—']
-                    ]
-                    service_table = Table(service_data, colWidths=[6.5 * cm, 8.5 * cm])
-                    service_table.setStyle(TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f7f9fb")),
-                        ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
-                        ('GRID', (0, 0), (-1, -1), 0.2, colors.lightgrey),
-                        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-                        ('FONTSIZE', (0, 0), (-1, -1), 9),
-                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                    ]))
-                    elements.append(service_table)
-                    elements.append(Spacer(1, 8))
-
         # Footer: entities to supervise
         elements.append(Paragraph("Entités à superviser :", header_style))
         entity_list = ', '.join(overview['entity_to_supervise']) or 'Aucune'
@@ -1429,3 +1554,485 @@ class PoleDirectorOverviewSet(viewsets.ViewSet):
 
         doc.build(elements)
         return response
+
+
+class DrhOverviewSet(viewsets.ViewSet):
+    """
+    Vue global pour le DRH
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['GET'], url_path='drh-overview')
+    def drh_overview(self, request):
+        drh = request.user
+
+        # vérifier si drh ou pas
+        if drh.role != 'admin':
+            return Response({'error': "Vous n'êtes pas un DRH"}, status=status.HTTP_403_FORBIDDEN)
+
+        clusters = Cluster.objects.all()
+        num_clusters = clusters.count()
+        cluster_names = [cluster.name for cluster in clusters]
+
+        # Metriques du groupe Axian
+        axian_collaborators = 0
+
+        total_participation_week_possible = 0
+        total_participation_month_possible = 0
+
+        total_submissions_day = 0
+        total_submissions_week = 0
+        total_submissions_month = 0
+        total_participation_day = 0
+        total_participation_week = 0
+        total_participation_month = 0
+
+        total_emotion_degree_day_axian = 0
+        total_emotion_degree_week_axian = 0
+        total_emotion_degree_month_axian = 0
+
+        cluster_to_supervise = [] # clusters à superviser
+
+        clusters_data = []
+
+        for cluster in clusters:
+            entities= cluster.entities.all()
+            collaborators = []
+            entity_names = [ent.name for ent in entities]
+            entity_to_supervise = []
+
+            cluster_director = cluster.collaborators.filter(role='pole_director').first()
+            cluster_director_name = f"{cluster_director.first_name} {cluster_director.last_name}" if cluster_director else None
+
+            cluster_total_collaborators = 0
+
+            total_participation_week_possible_cluster = 0
+            total_participation_month_possible_cluster = 0
+
+            cluster_submissions_day = 0
+            cluster_submissions_week = 0
+            cluster_submissions_month = 0
+            cluster_participation_day = 0
+            cluster_participation_week = 0
+            cluster_participation_month = 0
+
+            total_emotion_degree_day_cluster = 0
+            total_emotion_degree_week_cluster = 0
+            total_emotion_degree_month_cluster = 0
+
+            entities_data = []
+
+            for entity in entities:
+                departments = entity.departments.all()
+                department_names = [department.name for department in departments]
+                department_to_supervise = []
+
+                ent_director = entity.collaborators.filter(role='entity_director').first()
+                ent_director_name = f"{ent_director.first_name} {ent_director.last_name}" if ent_director else None
+
+                entity_total_collaborators = 0
+
+                total_participation_week_possible_entity = 0
+                total_participation_month_possible_entity = 0
+
+                entity_submissions_day = 0
+                entity_submissions_week = 0
+                entity_submissions_month = 0
+                entity_participation_day = 0
+                entity_participation_week = 0
+                entity_participation_month = 0
+
+                total_emotion_degree_day_entity = 0
+                total_emotion_degree_week_entity = 0
+                total_emotion_degree_month_entity = 0
+
+                departments_data = []
+
+                for department in departments:
+                    services = department.services.all()
+                    service_names = [service.name for service in services]
+                    service_to_supervise = []
+
+                    dept_director = department.collaborators.filter(role='department_director').first()
+                    dept_director_name = f"{dept_director.first_name} {dept_director.last_name}" if dept_director else None
+
+                    department_total_collaborators = 0
+
+                    total_participation_week_possible_department = 0
+                    total_participation_month_possible_department = 0
+
+                    department_submissions_day = 0
+                    department_submissions_week = 0
+                    department_submissions_month = 0
+                    department_participation_day = 0
+                    department_participation_week = 0
+                    department_participation_month = 0
+
+                    total_emotion_degree_day_department = 0
+                    total_emotion_degree_week_department = 0
+                    total_emotion_degree_month_department = 0
+
+                    services_data = []
+
+                    for service in services:
+                        service_collaborators = list(service.collaborators.all())
+                        collaborators += service_collaborators
+                        department_total_collaborators += len(service_collaborators)
+
+                        collaborators_to_supervise = []
+                        for collaborator in service.collaborators.all():
+                            if (
+                                collaborator.emotion_degree_this_week < 0
+                                or collaborator.emotion_degree_this_month < 0
+                                or sum(e.emotion_degree for e in collaborator.emotions.filter(date__date=today)) < 0
+                            ):
+                                collaborators_to_supervise.append(f"{collaborator.first_name} {collaborator.last_name}")
+
+                        # Submissions
+                        submissions_day = get_emotions_for_period(service_collaborators, 'day').count()
+                        submissions_week = get_emotions_for_period(service_collaborators, 'week').count()
+                        submissions_month = get_emotions_for_period(service_collaborators, 'month').count()
+
+                        # Paricipation percentages
+                        percent_day = min(1.0, submissions_day / (len(service_collaborators) * 2) if len(
+                            service_collaborators) else 0) * 100
+                        week_days = [today + timedelta(days=i - today.weekday()) for i in range(5)]
+                        week_working_days = sum(1 for d in week_days if d.month == today.month)
+                        week_possible = len(service_collaborators) * week_working_days * 2
+                        percent_week = min(1.0, submissions_week / week_possible if week_possible > 0 else 0) * 100
+                        _, last_day = monthrange(year, month)
+                        month_working_days = sum(1 for i in range(1, last_day + 1) if weekday(year, month, i) < 5)
+                        month_possible = len(service_collaborators) * month_working_days * 2
+                        percent_month = min(1.0, submissions_month / month_possible if month_possible > 0 else 0) * 100
+
+                        total_participation_week_possible_department += week_possible
+                        total_participation_month_possible_department += month_possible
+
+                        # Emotion degree
+                        degree_day = sum(
+                            [e.emotion_degree for e in get_emotions_for_period(service_collaborators, 'day')])
+                        degree_week = sum(
+                            [e.emotion_degree for e in get_emotions_for_period(service_collaborators, 'week')])
+                        degree_month = sum(
+                            [e.emotion_degree for e in get_emotions_for_period(service_collaborators, 'month')])
+
+                        humor_day = general_humor(degree_day)
+                        humor_week = general_humor(degree_week)
+                        humor_month = general_humor(degree_month)
+
+                        # Aggregate for department
+                        department_submissions_day += submissions_day
+                        department_submissions_week += submissions_week
+                        department_submissions_month += submissions_month
+                        department_participation_day += percent_day
+                        department_participation_week += percent_week
+                        department_participation_month += percent_month
+
+                        total_emotion_degree_day_department += degree_day
+                        total_emotion_degree_week_department += degree_week
+                        total_emotion_degree_month_department += degree_month
+
+                        # For service to supervise
+                        if humor_day == "negative" or humor_week == "negative" or humor_month == "negative":
+                            service_to_supervise.append(service.name)
+
+                        manager = service.collaborators.filter(role='manager').first()
+                        employees = service.collaborators.filter(role='employee')
+
+                        services_data.append({
+                            'service_name': service.name,
+                            'manager_name': f"{manager.first_name} {manager.last_name}" if manager else None,
+                            'employees_names': [f"{emp.first_name} {emp.last_name}" for emp in employees],
+                            'total_collaborators': len(service_collaborators),
+                            'total_submissions_day': submissions_day,
+                            'total_submissions_week': submissions_week,
+                            'total_submissions_month': submissions_month,
+                            'participation_percentage_day': round(percent_day, 2),
+                            'participation_percentage_week': round(percent_week, 2),
+                            'participation_percentage_month': round(percent_month, 2),
+                            'general_humor_day': humor_day,
+                            'general_humor_week': humor_week,
+                            'general_humor_month': humor_month,
+                            'collaborators_to_supervise': collaborators_to_supervise,
+                        })
+
+                    # For total general humor: aggregate by majority
+                    def aggregate_general_humor(services_data, period):
+                        humors = [service[f'general_humor_{period}'] for service in services_data]
+                        count_positive = humors.count("positive")
+                        count_negative = humors.count("negative")
+                        return "positive" if count_positive > count_negative else (
+                            "negative" if count_negative > count_positive else "neutral"
+                        )
+
+                    departments_data.append({
+                        'department_name': department.name,
+                        'department_director_name': dept_director_name,
+                        'service_names': service_names,
+                        'services': services_data,
+                        'total_collaborators': department_total_collaborators,
+                        'total_participation_week_possible_department': total_participation_week_possible_department,
+                        'total_participation_month_possible_department': total_participation_month_possible_department,
+                        'total_submissions_day': department_submissions_day,
+                        'total_submissions_week': department_submissions_week,
+                        'total_submissions_month': department_submissions_month,
+                        'unsubmitted_collaborators_week_department': total_participation_week_possible_department - department_submissions_week,
+                        'unsubmitted_collaborators_month_department': total_participation_month_possible_department - department_submissions_month,
+                        'percent_submission_week_department': round(
+                            department_submissions_week / total_participation_week_possible_department if total_participation_week_possible_department else 0,
+                            2),
+                        'percent_submission_month_department': round(
+                            department_submissions_month / total_participation_month_possible_department if total_participation_month_possible_department else 0,
+                            2),
+                        'participation_percentage_day': round(
+                            department_participation_day / len(services) if len(services) else 0, 2),
+                        'participation_percentage_week': round(
+                            department_participation_week / len(services) if len(services) else 0, 2),
+                        'participation_percentage_month': round(
+                            department_participation_month / len(services) if len(services) else 0, 2),
+                        'emotion_today_department': get_emotion_label(total_emotion_degree_day_department),
+                        'emotion_week_department': get_emotion_label(total_emotion_degree_week_department),
+                        'emotion_month_department': get_emotion_label(total_emotion_degree_month_department),
+                        'general_humor_day': aggregate_general_humor(services_data, 'day'),
+                        'general_humor_week': aggregate_general_humor(services_data, 'week'),
+                        'general_humor_month': aggregate_general_humor(services_data, 'month'),
+                        'service_to_supervise': service_to_supervise,
+                    })
+
+                    entity_total_collaborators += department_total_collaborators
+
+                    total_participation_week_possible_entity += total_participation_week_possible_department
+                    total_participation_month_possible_entity += total_participation_month_possible_department
+
+                    entity_submissions_day += department_submissions_day
+                    entity_submissions_week += department_submissions_week
+                    entity_submissions_month += department_submissions_month
+                    entity_participation_day += department_participation_day / len(services) if len(services) else 0
+                    entity_participation_week += department_participation_week / len(services) if len(services) else 0
+                    entity_participation_month += department_participation_month / len(services) if len(services) else 0
+
+                    total_emotion_degree_day_entity += total_emotion_degree_day_department
+                    total_emotion_degree_week_entity += total_emotion_degree_week_department
+                    total_emotion_degree_month_entity += total_emotion_degree_month_department
+
+                    if service_to_supervise:
+                        department_to_supervise.append(department.name)
+
+                def aggregate_general_humor(departments_data, period):
+                    humors = [dept[f'general_humor_{period}'] for dept in departments_data]
+                    count_positive = humors.count("positive")
+                    count_negative = humors.count("negative")
+                    return "positive" if count_positive > count_negative else (
+                        "negative" if count_negative > count_positive else "neutral")
+
+                entities_data.append({
+                    'entity_name': entity.name,
+                    'entity_director_name': ent_director_name,
+                    'department_names': department_names,
+                    'departments': departments_data,
+                    'total_collaborators': entity_total_collaborators,
+                    'total_participation_week_possible_entity': total_participation_week_possible_entity,
+                    'total_participation_month_possible_entity': total_participation_month_possible_entity,
+                    'total_submissions_day': entity_submissions_day,
+                    'total_submissions_week': entity_submissions_week,
+                    'total_submissions_month': entity_submissions_month,
+                    'unsubmitted_collaborators_week_entity': total_participation_week_possible_entity - entity_submissions_week,
+                    'unsubmitted_collaborators_month_entity': total_participation_month_possible_entity - entity_submissions_month,
+                    'percent_submission_week_entity': round(
+                        entity_submissions_week / total_participation_week_possible_entity if total_participation_week_possible_entity else 0,
+                        2),
+                    'percent_submission_month_entity': round(
+                        entity_submissions_month / total_participation_month_possible_entity if total_participation_month_possible_entity else 0,
+                        2),
+                    'participation_percentage_day': round(
+                        entity_participation_day / len(departments) if len(departments) else 0, 2),
+                    'participation_percentage_week': round(
+                        entity_participation_week / len(departments) if len(departments) else 0, 2),
+                    'participation_percentage_month': round(
+                        entity_participation_month / len(departments) if len(departments) else 0, 2),
+                    'general_humor_day': aggregate_general_humor(departments_data, 'day'),
+                    'general_humor_week': aggregate_general_humor(departments_data, 'week'),
+                    'general_humor_month': aggregate_general_humor(departments_data, 'month'),
+
+                    'emotion_today_entity': get_emotion_label(total_emotion_degree_day_entity),
+                    'emotion_week_entity': get_emotion_label(total_emotion_degree_week_entity),
+                    'emotion_month_entity': get_emotion_label(total_emotion_degree_month_entity),
+
+                    'department_to_supervise': department_to_supervise,
+                })
+
+                cluster_total_collaborators += entity_total_collaborators
+                cluster_submissions_day += entity_submissions_day
+                cluster_submissions_week += entity_submissions_week
+                cluster_submissions_month += entity_submissions_month
+                cluster_participation_day += entity_participation_day / len(departments) if len(departments) else 0
+                cluster_participation_week += entity_participation_week / len(departments) if len(departments) else 0
+                cluster_participation_month += entity_participation_month / len(departments) if len(departments) else 0
+
+                total_participation_week_possible_cluster += total_participation_week_possible_entity
+                total_participation_month_possible_cluster += total_participation_month_possible_entity
+
+                total_emotion_degree_day_cluster += total_emotion_degree_day_entity
+                total_emotion_degree_week_cluster += total_emotion_degree_week_entity
+                total_emotion_degree_month_cluster += total_emotion_degree_month_entity
+
+                if department_to_supervise:
+                    entity_to_supervise.append(entity.name)
+
+            def aggregate_general_humor(entities_data, period):
+                humors = [ent[f'general_humor_{period}'] for ent in entities_data]
+                count_positive = humors.count("positive")
+                count_negative = humors.count("negative")
+                return "positive" if count_positive > count_negative else (
+                    "negative" if count_negative > count_positive else "neutral")
+
+            clusters_data.append({
+                'cluster_name': cluster.name,
+                'entity_names': entity_names,
+                'cluster_director': cluster_director_name,
+                'entities': entities_data,
+                'total_collaborators': cluster_total_collaborators,
+                'total_participation_week_possible_cluster': total_participation_week_possible_cluster,
+                'total_participation_month_possible_cluster': total_participation_month_possible_cluster,
+                'cluster_submissions_day': cluster_submissions_day,
+                'cluster_submissions_week': cluster_submissions_week,
+                'cluster_submissions_month': cluster_submissions_month,
+                'unsubmitted_collaborators_week_cluster': total_participation_week_possible_cluster - cluster_submissions_week,
+                'unsubmitted_collaborators_month_cluster': total_participation_month_possible_cluster - cluster_submissions_month,
+                'percent_submissions_week_cluster': round(cluster_submissions_week / total_participation_week_possible_cluster if total_participation_week_possible_cluster else 0, 2),
+                'percent_submissions_month_cluster': round(cluster_submissions_month / total_participation_month_possible_cluster if total_participation_month_possible_cluster else 0, 2),
+                'emotion_today_cluster': get_emotion_label(total_emotion_degree_day_cluster),
+                'emotion_week_cluster': get_emotion_label(total_emotion_degree_week_cluster),
+                'emotion_month_cluster': get_emotion_label(total_emotion_degree_month_cluster),
+
+                'entity_to_supervise': entity_to_supervise,
+            })
+
+            axian_collaborators += cluster_total_collaborators
+            total_submissions_day += cluster_submissions_day
+            total_submissions_week += cluster_submissions_week
+            total_submissions_month += cluster_submissions_month
+            total_participation_day += cluster_participation_day / len(entities) if len(entities) else 0
+            total_participation_week += cluster_participation_week / len(entities) if len(entities) else 0
+            total_participation_month += cluster_participation_month / len(entities) if len(entities) else 0
+
+            total_participation_week_possible += total_participation_week_possible_cluster
+            total_participation_month_possible += total_participation_month_possible_cluster
+
+            total_emotion_degree_day_axian += total_emotion_degree_day_cluster
+            total_emotion_degree_week_axian += total_emotion_degree_week_cluster
+            total_emotion_degree_month_axian += total_emotion_degree_month_cluster
+
+            if entity_to_supervise:
+                cluster_to_supervise.append(cluster.name)
+
+        def aggregate_general_humor(clusters_data, period):
+            humors = [clu[f'general_humor_{period}'] for clu in clusters_data]
+            count_positive = humors.count("positive")
+            count_negative = humors.count("negative")
+            return "positive" if count_positive > count_negative else (
+                "negative" if count_negative > count_positive else "neutral")
+
+        return Response({
+            'cluster_names': cluster_names,
+            'num_clusters': num_clusters,
+            'clusters': clusters_data,
+            'total_collaborators': axian_collaborators,
+            'total_participation_week_possible': total_participation_week_possible,
+            'total_participation_month_possible': total_participation_month_possible,
+            'total_submissions_day': total_submissions_day,
+            'total_submissions_week': total_submissions_week,
+            'total_submissions_month': total_submissions_month,
+            'unsubmitted_collaborators_week': total_participation_week_possible - total_submissions_week,
+            'unsubmitted_collaborators_month': total_participation_month_possible - total_submissions_month,
+            'percent_submission_week': round(
+                total_submissions_week / total_participation_week_possible if total_participation_week_possible else 0,
+                2),
+            'percent_submission_month': round(
+                total_submissions_month / total_participation_month_possible if total_participation_month_possible else 0,
+                2),
+
+            'emotion_today': get_emotion_label(total_emotion_degree_day_axian),
+            'emotion_week': get_emotion_label(total_emotion_degree_week_axian),
+            'emotion_month': get_emotion_label(total_emotion_degree_month_axian),
+
+            'cluster_to_supervise': cluster_to_supervise,
+        })
+
+    @action(detail=False, methods=['GET'], url_path='drh-overview-reporting-pdf')
+    def drh_reporting_pdf(self, request):
+        drh = request.user
+
+        if drh.role != 'admin':
+            return Response({'error': "Vous n'êtes pas un DRH"}, status=status.HTTP_403_FORBIDDEN)
+
+        overview = self.drh_overview(request).data
+
+        # Create PDF
+        response = HttpResponse(content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="drh_report.pdf"'
+
+        doc = SimpleDocTemplate(response, pagesize=A4, topMargin=2 * cm, bottomMargin=2 * cm)
+        styles = getSampleStyleSheet()
+        elements = []
+
+        # Custom styles
+        title_style = ParagraphStyle(name='Title', fontSize=18, textColor=colors.HexColor("#002b49"), spaceAfter=12)
+        header_style = ParagraphStyle(name='Header', fontSize=14, textColor=colors.black, spaceBefore=12, spaceAfter=6)
+        normal_style = ParagraphStyle(name='Normal', fontSize=10, textColor=colors.black)
+        bold_style = ParagraphStyle(name='Bold', fontSize=10, textColor=colors.black, spaceAfter=6, leading=14)
+
+        # Title
+        elements.append(Paragraph("Reporting Globale Emotiontracker Axian Group", title_style))
+        elements.append(Spacer(1, 12))
+
+        # General Stats table
+        general_data = [
+            ['Nombre de clusters', overview['num_clusters']],
+            ['Total collaborateurs', overview['total_collaborators']],
+            ['Totale de soumissions possible', overview['total_participation_month_possible']],
+            ['Soumissions achevés', overview['total_submissions_month']],
+            ['Soumissions inachevés', overview['unsubmitted_collaborators_month']],
+            ['Taux de participation (%)', overview['percent_submission_month']],
+            ['Tendance emotionnelle global', overview['emotion_month']],
+        ]
+        table = Table(general_data, colWidths=[7 * cm, 8 * cm])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#002b49")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#f2f2f2")),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 18))
+
+        # Cluster details
+        elements.append(Paragraph("Clusters :"), header_style)
+        for cluster in overview['clusters']:
+            data = [
+                ['Nom', cluster['cluster_name']],
+                ['Directeur', cluster['cluster_director']],
+                ["Entités", ', '.join(cluster['entity_names'])],
+                ['Total collaborateurs', cluster['total_collaborators']],
+                ['Total de soumissions possible', cluster['total_participation_month_possible_cluster']],
+                ['Soumissions achevés', cluster['cluster_submissions_month']],
+                ['Soumissions inachevés', cluster['unsubmitted_collaborators_month_cluster']],
+                ['Taux de participation (%)', cluster['percent_submissions_month_cluster']],
+                ["Tendance émotionnelle", cluster['emotion_month_cluster']],
+                ['À superviser', ', '.join(cluster['entity_to_supervise']) or '—'],
+            ]
+            cluster_table = Table(data, colWidths=[6.5 * cm, 8.5 * cm])
+            cluster_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#dce3ea")),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+                ('GRID', (0, 0), (-1, -1), 0.3, colors.grey),
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ]))
+            elements.append(cluster_table)
+            elements.append(Spacer(1, 12))

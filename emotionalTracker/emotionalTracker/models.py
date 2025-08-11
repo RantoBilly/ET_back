@@ -333,11 +333,11 @@ class Collaborator(AbstractBaseUser, PermissionsMixin):
     def clean(self):
 
         if not self.role and (self.cluster or self.entity or self.department or self.service):
-            raise ({
+            raise ValidationError({
                 "role": "veuillez indiquez le rôle s'il vous plaît"
             })
 
-        if self.role:
+        if self.role and self.role != 'admin':
             if self.role == 'pole_director':
                 if not self.cluster or self.service or self.department or self.entity:
                     raise ValidationError({
